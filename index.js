@@ -45,6 +45,8 @@ const coreTeamAnalyticsRoutes = require("./routes/analyticsRoutes");
 const coreTeamProjectMasterRoutes = require("./routes/projectMasterRoutes");
 // Imports Core Team user-management routes.
 const coreTeamUserManagementRoutes = require("./routes/userManagementRoutes");
+// Imports Core Team Assignment Matrix routes.
+const coreTeamAssignmentMatrixRoutes = require("./routes/coreTeam/assignmentMatrixRoutes");
 
 
 // ============================================
@@ -135,7 +137,8 @@ app.use("/api/core-team",coreTeamAnalyticsRoutes);
 app.use("/api/core-team",coreTeamProjectMasterRoutes);
 // Registers Core Team user-management APIs under /api/core-team.
 app.use("/api/core-team",coreTeamUserManagementRoutes);
-
+// Registers Core Team Assignment Matrix APIs under /api/core-team.
+app.use("/api/core-team", coreTeamAssignmentMatrixRoutes);
 // ============================================
 // SERVER
 // ============================================
