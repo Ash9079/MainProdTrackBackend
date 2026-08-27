@@ -13,6 +13,7 @@ const {
   createProject,
   updateProject,
   getTeamLeads,
+  getReportingCategories,
 } = require("../controllers/projectMasterController");
 
 // Creates an Express router for Core Team Project Master APIs.
@@ -54,6 +55,12 @@ router.patch(
   updateProject
 );
 
+router.get(
+  "/projects/reporting-categories",
+  authenticate,
+  allowRoles("coreTeam", "administrator"),
+  getReportingCategories
+);
 
 // Exports the Project Master router so index.js can register it.
 module.exports = router;

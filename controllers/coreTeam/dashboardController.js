@@ -2,51 +2,65 @@
 const db = require("../../config/db");
 
 
+// ============================================================
+// 1. CORE TEAM DASHBOARD SUMMARY
+// ============================================================
+
 // Gets the main Core Team dashboard summary cards.
 const getCoreTeamDashboard = async (req, res) => {
   try {
-    // Calculates total received and completed production across all employees and projects.
-    const [productionRows] = await db.query(
-      `
+
+    // --------------------------------------------------------
+    // Total Received + Total Completed
+    // --------------------------------------------------------
+    const [productionRows] = await db.query(`
       SELECT
-        COALESCE(SUM(documents_received), 0) AS totalReceived,
-        COALESCE(SUM(documents_completed), 0) AS totalCompleted
-      FROM daily_entries
-      `
-    );
+        COALESCE(SUM(docs_received), 0) AS totalReceived,
+        COALESCE(SUM(docs_completed), 0) AS totalCompleted
+      FROM daily_entry
+    `);
 
-    // Counts all currently active users except administrator accounts.
-    const [employeeRows] = await db.query(
-      `
-      SELECT COUNT(*) AS activeEmployees
-      FROM users
-      WHERE status = 'active'
-        AND role != 'administrator'
-      `
-    );
-
-    // Converts total received production into a JavaScript number.
     const totalReceived = Number(
-      productionRows[0].totalReceived
+      productionRows[0].totalReceived || 0
     );
 
-    // Converts total completed production into a JavaScript number.
     const totalCompleted = Number(
-      productionRows[0].totalCompleted
+      productionRows[0].totalCompleted || 0
     );
 
-    // Calculates the organisation-wide backlog from received minus completed.
+
+    // --------------------------------------------------------
+    // Project Backlog
+    // --------------------------------------------------------
     const projectBacklog = Math.max(
       totalReceived - totalCompleted,
       0
     );
 
-    // Converts the active employee count into a JavaScript number.
+
+    // --------------------------------------------------------
+    // Active Employees
+    //
+    // Counts all active users except Administrator.
+    // --------------------------------------------------------
+    const [employeeRows] = await db.query(`
+      SELECT
+        COUNT(*) AS activeEmployees
+      FROM users u
+      INNER JOIN role r
+        ON r.role_id = u.role_id
+      WHERE u.status = 'active'
+        AND r.code <> 'admin'
+    `);
+
     const activeEmployees = Number(
-      employeeRows[0].activeEmployees
+      employeeRows[0].activeEmployees || 0
     );
 
-    // Calculates the organisation-wide completion percentage.
+
+    // --------------------------------------------------------
+    // Completion Rate
+    // --------------------------------------------------------
     const completionRate =
       totalReceived > 0
         ? Math.round(
@@ -54,7 +68,10 @@ const getCoreTeamDashboard = async (req, res) => {
           )
         : 0;
 
-    // Returns the main Core Team dashboard summary values.
+
+    // --------------------------------------------------------
+    // Response
+    // --------------------------------------------------------
     return res.status(200).json({
       success: true,
 
@@ -68,13 +85,12 @@ const getCoreTeamDashboard = async (req, res) => {
     });
 
   } catch (error) {
-    // Logs the actual dashboard error in the backend terminal.
+
     console.error(
       "Core Team Dashboard Error:",
       error
     );
 
-    // Returns an error response when Core Team dashboard data cannot be loaded.
     return res.status(500).json({
       success: false,
       message: "Failed to load Core Team dashboard",
@@ -83,55 +99,83 @@ const getCoreTeamDashboard = async (req, res) => {
   }
 };
 
-// Gets monthly received and completed production across the organisation.
+
+// ============================================================
+// 2. MONTHLY PRODUCTION TREND
+// ============================================================
+
+// Gets received and completed production for the last 6 months.
 const getMonthlyProductionTrend = async (req, res) => {
   try {
-    // Groups all production records by month for the last 6 months.
-    const [trend] = await db.query(
-      `
+
+    const [trend] = await db.query(`
       SELECT
-        DATE_FORMAT(production_date, '%Y-%m') AS month_key,
-        DATE_FORMAT(production_date, '%b %Y') AS month_name,
+        DATE_FORMAT(
+          production_date,
+          '%Y-%m'
+        ) AS month_key,
+
+        DATE_FORMAT(
+          production_date,
+          '%b %Y'
+        ) AS month_name,
 
         COALESCE(
-          SUM(documents_received),
+          SUM(docs_received),
           0
         ) AS received,
 
         COALESCE(
-          SUM(documents_completed),
+          SUM(docs_completed),
           0
         ) AS completed
 
-      FROM daily_entries
+      FROM daily_entry
 
       WHERE production_date >=
-        DATE_SUB(CURDATE(), INTERVAL 5 MONTH)
+        DATE_SUB(
+          DATE_FORMAT(CURDATE(), '%Y-%m-01'),
+          INTERVAL 5 MONTH
+        )
 
       GROUP BY
-        DATE_FORMAT(production_date, '%Y-%m'),
-        DATE_FORMAT(production_date, '%b %Y')
+        DATE_FORMAT(
+          production_date,
+          '%Y-%m'
+        ),
+
+        DATE_FORMAT(
+          production_date,
+          '%b %Y'
+        )
 
       ORDER BY
         month_key ASC
-      `
-    );
+    `);
 
-    // Returns organisation-wide monthly production trend data.
+
+    // Convert MySQL values to JavaScript numbers.
+    const formattedTrend = trend.map((item) => ({
+      month_key: item.month_key,
+      month_name: item.month_name,
+      received: Number(item.received || 0),
+      completed: Number(item.completed || 0),
+    }));
+
+
     return res.status(200).json({
       success: true,
-      count: trend.length,
-      trend,
+      count: formattedTrend.length,
+      trend: formattedTrend,
     });
 
   } catch (error) {
-    // Logs monthly production trend errors in the backend terminal.
+
     console.error(
       "Monthly Production Trend Error:",
       error
     );
 
-    // Returns an error when monthly production trend cannot be loaded.
     return res.status(500).json({
       success: false,
       message: "Failed to load monthly production trend",
@@ -141,70 +185,93 @@ const getMonthlyProductionTrend = async (req, res) => {
 };
 
 
-// Gets current backlog totals grouped by project.
+// ============================================================
+// 3. BACKLOG BY PROJECT
+// ============================================================
+
+// Gets received, completed and backlog totals for every project.
 const getBacklogByProject = async (req, res) => {
   try {
-    // Calculates received, completed, and backlog for every project.
-    const [projects] = await db.query(
-      `
+
+    const [projects] = await db.query(`
       SELECT
-        p.id,
+        p.project_id AS id,
         p.project_code,
         p.project_name,
 
         COALESCE(
-          SUM(de.documents_received),
+          SUM(de.docs_received),
           0
         ) AS received,
 
         COALESCE(
-          SUM(de.documents_completed),
+          SUM(de.docs_completed),
           0
         ) AS completed,
 
         GREATEST(
           COALESCE(
-            SUM(de.documents_received),
+            SUM(de.docs_received),
             0
           )
           -
           COALESCE(
-            SUM(de.documents_completed),
+            SUM(de.docs_completed),
             0
           ),
           0
         ) AS backlog
 
-      FROM projects p
+      FROM project p
 
-      LEFT JOIN daily_entries de
-        ON de.project_id = p.id
+      LEFT JOIN daily_entry de
+        ON de.project_id = p.project_id
 
       GROUP BY
-        p.id,
+        p.project_id,
         p.project_code,
         p.project_name
 
       ORDER BY
-        backlog DESC
-      `
+        backlog DESC,
+        p.project_name ASC
+    `);
+
+
+    const formattedProjects = projects.map(
+      (project) => ({
+        id: project.id,
+        project_code: project.project_code,
+        project_name: project.project_name,
+
+        received: Number(
+          project.received || 0
+        ),
+
+        completed: Number(
+          project.completed || 0
+        ),
+
+        backlog: Number(
+          project.backlog || 0
+        ),
+      })
     );
 
-    // Returns project-wise backlog information for the dashboard.
+
     return res.status(200).json({
       success: true,
-      count: projects.length,
-      projects,
+      count: formattedProjects.length,
+      projects: formattedProjects,
     });
 
   } catch (error) {
-    // Logs project backlog errors in the backend terminal.
+
     console.error(
       "Backlog By Project Error:",
       error
     );
 
-    // Returns an error when project backlog cannot be loaded.
     return res.status(500).json({
       success: false,
       message: "Failed to load backlog by project",
@@ -213,28 +280,45 @@ const getBacklogByProject = async (req, res) => {
   }
 };
 
-// Gets the total number of pending correction requests across the organisation.
+
+// ============================================================
+// 4. PENDING CORRECTIONS
+// ============================================================
+
+// Gets total correction requests currently waiting for review.
 const getPendingCorrections = async (req, res) => {
   try {
-    // Counts all correction requests that are still waiting for review.
-    const [rows] = await db.query(
-      `
-      SELECT COUNT(*) AS pendingCorrections
-      FROM correction_requests
-      WHERE status = 'PENDING'
-      `
+
+    const [rows] = await db.query(`
+      SELECT
+        COUNT(*) AS pendingCorrections
+
+      FROM correction_request cr
+
+      INNER JOIN correction_status cs
+        ON cs.status_id = cr.status_id
+
+      WHERE cs.code = 'pending'
+    `);
+
+
+    const pendingCorrections = Number(
+      rows[0].pendingCorrections || 0
     );
 
-    // Returns the pending correction count.
+
     return res.status(200).json({
       success: true,
-      pendingCorrections: Number(rows[0].pendingCorrections),
+      pendingCorrections,
     });
-  } catch (error) {
-    // Logs pending correction errors in the backend terminal.
-    console.error("Pending Corrections Error:", error);
 
-    // Returns an error when pending correction data cannot be loaded.
+  } catch (error) {
+
+    console.error(
+      "Pending Corrections Error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       message: "Failed to load pending corrections",
@@ -244,57 +328,95 @@ const getPendingCorrections = async (req, res) => {
 };
 
 
+// ============================================================
+// 5. GUIDE COMPLIANCE
+// ============================================================
+
 // Gets organisation-wide guide acknowledgement compliance.
 const getGuideCompliance = async (req, res) => {
   try {
-    // Counts required guide acknowledgements for assigned active guides.
-    const [rows] = await db.query(
-      `
+
+    /*
+      Required acknowledgement means:
+
+      1. User is an active Indexer.
+      2. User is assigned to the project.
+      3. Project has a guide.
+      4. Guide has a latest version.
+      5. Latest version requires acknowledgement.
+
+      Acknowledged means the acknowledgement record
+      exists and its status is 'read'.
+    */
+
+    const [rows] = await db.query(`
       SELECT
+
         COUNT(*) AS totalRequired,
 
-        SUM(
-          CASE
-            WHEN ga.id IS NOT NULL THEN 1
-            ELSE 0
-          END
+        COALESCE(
+          SUM(
+            CASE
+              WHEN ga.ack_id IS NOT NULL
+                AND ga.status = 'read'
+              THEN 1
+              ELSE 0
+            END
+          ),
+          0
         ) AS acknowledged
 
-      FROM user_project_assignments upa
+      FROM project_assignment pa
 
-      JOIN users u
-        ON u.id = upa.user_id
-        AND u.role = 'indexer'
-        AND u.status = 'active'
+      INNER JOIN users u
+        ON u.user_id = pa.user_id
 
-      JOIN guides g
-        ON g.project_id = upa.project_id
-        AND g.status = 'active'
+      INNER JOIN role r
+        ON r.role_id = u.role_id
+        AND r.code = 'indexer'
 
-      LEFT JOIN guide_acknowledgements ga
-        ON ga.guide_id = g.id
-        AND ga.user_id = upa.user_id
-      `
+      INNER JOIN guide g
+        ON g.project_id = pa.project_id
+
+      INNER JOIN guide_version gv
+        ON gv.guide_id = g.guide_id
+        AND gv.is_latest = 1
+        AND gv.requires_ack = 1
+
+      LEFT JOIN guide_acknowledgement ga
+        ON ga.version_id = gv.version_id
+        AND ga.user_id = pa.user_id
+
+      WHERE u.status = 'active'
+    `);
+
+
+    const totalRequired = Number(
+      rows[0].totalRequired || 0
     );
 
-    // Converts the total required acknowledgements into a number.
-    const totalRequired = Number(rows[0].totalRequired || 0);
+    const acknowledged = Number(
+      rows[0].acknowledged || 0
+    );
 
-    // Converts the completed acknowledgement count into a number.
-    const acknowledged = Number(rows[0].acknowledged || 0);
 
-    // Calculates how many required acknowledgements are still pending.
-    const pending = Math.max(totalRequired - acknowledged, 0);
+    const pending = Math.max(
+      totalRequired - acknowledged,
+      0
+    );
 
-    // Calculates the overall guide compliance percentage.
+
     const complianceRate =
       totalRequired > 0
-        ? Math.round((acknowledged / totalRequired) * 100)
+        ? Math.round(
+            (acknowledged / totalRequired) * 100
+          )
         : 100;
 
-    // Returns organisation-wide guide compliance values.
+
     return res.status(200).json({
       success: true,
+
       compliance: {
         totalRequired,
         acknowledged,
@@ -302,11 +424,14 @@ const getGuideCompliance = async (req, res) => {
         complianceRate,
       },
     });
-  } catch (error) {
-    // Logs guide compliance errors in the backend terminal.
-    console.error("Guide Compliance Error:", error);
 
-    // Returns an error when guide compliance cannot be calculated.
+  } catch (error) {
+
+    console.error(
+      "Guide Compliance Error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       message: "Failed to load guide compliance",
@@ -316,57 +441,85 @@ const getGuideCompliance = async (req, res) => {
 };
 
 
-// Gets active Indexers who have not submitted a daily entry today.
+// ============================================================
+// 6. MISSING DAILY ENTRIES
+// ============================================================
+
+// Gets active Indexers who have not submitted/created
+// any production entry today.
 const getMissingEntries = async (req, res) => {
   try {
-    // Finds active Indexers with no daily entry for today's production date.
-    const [employees] = await db.query(
-      `
+
+    /*
+      Excludes:
+
+      - inactive users
+      - non-Indexers
+      - Indexers who already have a daily entry today
+      - users whose attendance status says the day
+        does not count as a production day
+        (for example approved/planned leave)
+    */
+
+    const [employees] = await db.query(`
       SELECT
-        u.id,
-        u.employee_id,
-        u.name,
+        u.user_id AS id,
+        u.emp_code AS employee_id,
+        u.full_name AS name,
         u.email
 
       FROM users u
 
-      WHERE u.role = 'indexer'
+      INNER JOIN role r
+        ON r.role_id = u.role_id
+
+      WHERE r.code = 'indexer'
+
         AND u.status = 'active'
 
         AND NOT EXISTS (
           SELECT 1
 
-          FROM daily_entries de
+          FROM daily_entry de
 
-          WHERE de.user_id = u.id
-            AND DATE(de.production_date) = CURDATE()
+          WHERE de.user_id = u.user_id
+
+            AND de.production_date = CURDATE()
         )
 
         AND NOT EXISTS (
           SELECT 1
 
-          FROM leave_requests lr
+          FROM attendance a
 
-          WHERE lr.user_id = u.id
-            AND lr.status = 'APPROVED'
-            AND CURDATE() BETWEEN lr.start_date AND lr.end_date
+          INNER JOIN attendance_status ats
+            ON ats.status_id = a.status_id
+
+          WHERE a.user_id = u.user_id
+
+            AND a.att_date = CURDATE()
+
+            AND ats.counts_as_production_day = 0
         )
 
-      ORDER BY u.name ASC
-      `
-    );
+      ORDER BY
+        u.full_name ASC
+    `);
 
-    // Returns employees who are missing today's daily entry.
+
     return res.status(200).json({
       success: true,
       count: employees.length,
       employees,
     });
-  } catch (error) {
-    // Logs missing-entry errors in the backend terminal.
-    console.error("Missing Entries Error:", error);
 
-    // Returns an error when missing-entry data cannot be loaded.
+  } catch (error) {
+
+    console.error(
+      "Missing Entries Error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       message: "Failed to load missing entries",
@@ -376,12 +529,15 @@ const getMissingEntries = async (req, res) => {
 };
 
 
-// Exports Core Team dashboard functions so the routes can use them.
+// ============================================================
+// EXPORTS
+// ============================================================
+
 module.exports = {
   getCoreTeamDashboard,
   getMonthlyProductionTrend,
   getBacklogByProject,
-   getPendingCorrections,
+  getPendingCorrections,
   getGuideCompliance,
   getMissingEntries,
 };

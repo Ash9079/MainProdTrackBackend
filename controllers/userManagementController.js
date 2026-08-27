@@ -1,118 +1,154 @@
-// Imports bcrypt so generated passwords are securely hashed before storage.
+const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 
-// Imports Node's crypto module for generating a temporary password.
-const crypto = require("crypto");
 
-// Imports the MySQL database connection.
-const db = require("../config/db");
+// ============================================================
+// HELPER - GENERATE NEXT EMPLOYEE CODE
+// ============================================================
 
-
-// Generates the next employee ID such as EMP-1051.
-const generateEmployeeId = async (connection) => {
-  // Finds the highest numeric employee ID currently stored.
-  const [rows] = await connection.query(
-    `
-    SELECT
-      MAX(
-        CAST(
-          SUBSTRING(employee_id, 5)
-          AS UNSIGNED
-        )
-      ) AS highest_employee_number
+const generateEmployeeCode = async (connection) => {
+  const [rows] = await connection.query(`
+    SELECT emp_code
     FROM users
-    WHERE employee_id LIKE 'EMP-%'
-    `
+    WHERE emp_code REGEXP '^EMP-[0-9]+$'
+    ORDER BY CAST(
+      SUBSTRING(emp_code, 5) AS UNSIGNED
+    ) DESC
+    LIMIT 1
+  `);
+
+  if (rows.length === 0) {
+    return "EMP-0001";
+  }
+
+  const lastNumber = Number(
+    rows[0].emp_code.replace("EMP-", "")
   );
 
-  // Uses the next number after the current highest employee number.
-  const nextNumber =
-    Number(rows[0].highest_employee_number || 1000) + 1;
-
-  // Formats the generated ID in EMP-XXXX format.
-  return `EMP-${String(nextNumber).padStart(4, "0")}`;
+  return `EMP-${String(lastNumber + 1).padStart(4, "0")}`;
 };
 
 
-// Generates a temporary password for a newly created employee.
-const generateTemporaryPassword = () => {
-  // Creates a short random password that can be changed after first login.
-  return `Temp@${crypto.randomBytes(4).toString("hex")}`;
-};
+// ============================================================
+// 1. GET ALL USERS
+// ============================================================
 
-
-// Gets all employees for the Core Team Users screen.
 const getAllUsers = async (req, res) => {
   try {
-    // Loads employee details, Team Lead, and assigned-project information.
-    const [users] = await db.query(
-      `
+    const [users] = await db.query(`
       SELECT
-        u.id,
-        u.employee_id,
-        u.name,
+        u.user_id AS id,
+        u.emp_code AS employee_id,
+        u.full_name AS name,
+        u.username,
         u.email,
-        u.department,
+
+        u.department_id,
+        d.name AS department,
+
         u.designation,
-        u.role,
+
+        u.role_id,
+        r.code AS role,
+
+        u.team_lead_id,
+        tl.full_name AS team_lead_name,
+
         u.status,
-
-        tm.team_lead_id,
-
-        tl.name AS team_lead_name,
-
-        COUNT(
-          DISTINCT upa.project_id
-        ) AS assigned_project_count,
+        u.last_login_at,
+        u.created_at,
 
         GROUP_CONCAT(
           DISTINCT p.project_name
           ORDER BY p.project_name
           SEPARATOR ', '
-        ) AS assigned_projects
+        ) AS projects,
+
+        GROUP_CONCAT(
+          DISTINCT p.project_id
+          ORDER BY p.project_id
+          SEPARATOR ','
+        ) AS project_ids
 
       FROM users u
 
-      LEFT JOIN team_members tm
-        ON tm.member_id = u.id
+      INNER JOIN role r
+        ON r.role_id = u.role_id
+
+      LEFT JOIN department d
+        ON d.department_id = u.department_id
 
       LEFT JOIN users tl
-        ON tl.id = tm.team_lead_id
+        ON tl.user_id = u.team_lead_id
 
-      LEFT JOIN user_project_assignments upa
-        ON upa.user_id = u.id
+      LEFT JOIN project_assignment pa
+        ON pa.user_id = u.user_id
 
-      LEFT JOIN projects p
-        ON p.id = upa.project_id
+      LEFT JOIN project p
+        ON p.project_id = pa.project_id
 
       GROUP BY
-        u.id,
-        u.employee_id,
-        u.name,
+        u.user_id,
+        u.emp_code,
+        u.full_name,
+        u.username,
         u.email,
-        u.department,
+        u.department_id,
+        d.name,
         u.designation,
-        u.role,
+        u.role_id,
+        r.code,
+        u.team_lead_id,
+        tl.full_name,
         u.status,
-        tm.team_lead_id,
-        tl.name
+        u.last_login_at,
+        u.created_at
 
-      ORDER BY u.name ASC
-      `
-    );
+      ORDER BY u.full_name ASC
+    `);
 
-    // Returns all users required by the Core Team Users table.
+    const formattedUsers = users.map((user) => ({
+      id: user.id,
+      employee_id: user.employee_id,
+      name: user.name,
+      username: user.username,
+      email: user.email,
+
+      department_id: user.department_id,
+      department: user.department,
+
+      designation: user.designation,
+
+      role_id: user.role_id,
+      role: user.role,
+
+      team_lead_id: user.team_lead_id,
+      team_lead_name: user.team_lead_name,
+
+      status: user.status,
+      last_login_at: user.last_login_at,
+      created_at: user.created_at,
+
+      projects: user.projects
+        ? user.projects.split(", ")
+        : [],
+
+      project_ids: user.project_ids
+        ? user.project_ids
+            .split(",")
+            .map(Number)
+        : [],
+    }));
+
     return res.status(200).json({
       success: true,
-      count: users.length,
-      users,
+      count: formattedUsers.length,
+      users: formattedUsers,
     });
 
   } catch (error) {
-    // Logs user-list errors in the backend terminal.
-    console.error("Get All Users Error:", error);
+    console.error("Get Users Error:", error);
 
-    // Returns an error when user data cannot be loaded.
     return res.status(500).json({
       success: false,
       message: "Failed to load users",
@@ -122,25 +158,30 @@ const getAllUsers = async (req, res) => {
 };
 
 
-// Gets active Team Leads for the Team Lead dropdown.
+// ============================================================
+// 2. GET TEAM LEADS
+// ============================================================
+
 const getUserTeamLeads = async (req, res) => {
   try {
-    // Loads active Team Lead accounts that can manage Indexers.
-    const [teamLeads] = await db.query(
-      `
+    const [teamLeads] = await db.query(`
       SELECT
-        id,
-        employee_id,
-        name,
-        email
-      FROM users
-      WHERE role = 'teamLead'
-        AND status = 'active'
-      ORDER BY name ASC
-      `
-    );
+        u.user_id AS id,
+        u.emp_code AS employee_id,
+        u.full_name AS name,
+        u.email
 
-    // Returns Team Leads for the Add/Edit User popup.
+      FROM users u
+
+      INNER JOIN role r
+        ON r.role_id = u.role_id
+
+      WHERE r.code = 'lead'
+        AND u.status = 'active'
+
+      ORDER BY u.full_name ASC
+    `);
+
     return res.status(200).json({
       success: true,
       count: teamLeads.length,
@@ -148,10 +189,11 @@ const getUserTeamLeads = async (req, res) => {
     });
 
   } catch (error) {
-    // Logs Team Lead dropdown errors in the backend terminal.
-    console.error("Get User Team Leads Error:", error);
+    console.error(
+      "Get User Team Leads Error:",
+      error
+    );
 
-    // Returns an error when Team Leads cannot be loaded.
     return res.status(500).json({
       success: false,
       message: "Failed to load Team Leads",
@@ -161,24 +203,25 @@ const getUserTeamLeads = async (req, res) => {
 };
 
 
-// Gets active projects for the Assigned Projects dropdown.
+// ============================================================
+// 3. GET PROJECTS FOR DROPDOWN
+// ============================================================
+
 const getUserProjects = async (req, res) => {
   try {
-    // Loads active projects available for employee assignment.
-    const [projects] = await db.query(
-      `
+    const [projects] = await db.query(`
       SELECT
-        id,
+        project_id AS id,
         project_code,
-        project_name,
-        status
-      FROM projects
-      WHERE status = 'active'
-      ORDER BY project_name ASC
-      `
-    );
+        project_name
 
-    // Returns projects for the Add/Edit User popup.
+      FROM project
+
+      WHERE status = 'active'
+
+      ORDER BY project_name ASC
+    `);
+
     return res.status(200).json({
       success: true,
       count: projects.length,
@@ -186,10 +229,11 @@ const getUserProjects = async (req, res) => {
     });
 
   } catch (error) {
-    // Logs project-dropdown errors in the backend terminal.
-    console.error("Get User Projects Error:", error);
+    console.error(
+      "Get User Projects Error:",
+      error
+    );
 
-    // Returns an error when projects cannot be loaded.
     return res.status(500).json({
       success: false,
       message: "Failed to load projects",
@@ -199,256 +243,286 @@ const getUserProjects = async (req, res) => {
 };
 
 
-// Creates a user using the exact fields shown in the Core Team Add User popup.
+// ============================================================
+// 4. CREATE USER
+// ============================================================
+
 const createUser = async (req, res) => {
   let connection;
 
   try {
-    // Gets the fields submitted from the Add User popup.
     const {
       name,
+      username,
       email,
-      department,
+      password,
+      roleId,
+      departmentId,
       designation,
-      role,
       teamLeadId,
-      status = "active",
       projectIds = [],
+      status = "active",
     } = req.body;
 
-    // Checks that the required popup fields were supplied.
+
+    // --------------------------------------------------------
+    // Required fields
+    // --------------------------------------------------------
+
     if (
       !name ||
+      !username ||
       !email ||
-      !department ||
-      !designation ||
-      !role
+      !password ||
+      !roleId
     ) {
       return res.status(400).json({
         success: false,
         message:
-          "Name, email, department, designation and role are required",
+          "Name, username, email, password and role are required",
       });
     }
 
-    // Defines roles supported by the existing users table.
-    const allowedRoles = [
-      "indexer",
-      "teamLead",
-      "coreTeam",
-      "administrator",
-    ];
 
-    // Prevents unsupported roles from being stored.
-    if (!allowedRoles.includes(role)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid user role",
-      });
-    }
-
-    // Validates the Active/Inactive selection from the popup.
-    if (!["active", "inactive"].includes(status)) {
+    if (
+      !["active", "inactive"].includes(status)
+    ) {
       return res.status(400).json({
         success: false,
         message: "Invalid user status",
       });
     }
 
-    // Requires a Team Lead when the newly created user is an Indexer.
-    if (role === "indexer" && !teamLeadId) {
-      return res.status(400).json({
-        success: false,
-        message: "Team Lead is required for an Indexer",
-      });
-    }
 
-    // Validates that Assigned Projects is an array when supplied.
-    if (!Array.isArray(projectIds)) {
-      return res.status(400).json({
-        success: false,
-        message: "projectIds must be an array",
-      });
-    }
+    // --------------------------------------------------------
+    // Validate role
+    // --------------------------------------------------------
 
-    // Checks whether the email is already used by another employee.
-    const [existingEmail] = await db.query(
+    const [roleRows] = await db.query(
       `
-      SELECT id
-      FROM users
-      WHERE email = ?
+      SELECT role_id, code
+      FROM role
+      WHERE role_id = ?
       LIMIT 1
       `,
-      [email]
+      [roleId]
     );
 
-    // Prevents duplicate employee email addresses.
-    if (existingEmail.length > 0) {
+    if (roleRows.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "Email already exists",
+        message: "Invalid role",
       });
     }
 
-    // Validates the selected Team Lead when one is required.
-    if (role === "indexer") {
+
+    // --------------------------------------------------------
+    // Check duplicate username/email
+    // --------------------------------------------------------
+
+    const [existingUsers] = await db.query(
+      `
+      SELECT user_id
+      FROM users
+      WHERE email = ?
+         OR username = ?
+      LIMIT 1
+      `,
+      [email, username]
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Email or username already exists",
+      });
+    }
+
+
+    // --------------------------------------------------------
+    // Validate Team Lead
+    // --------------------------------------------------------
+
+    if (teamLeadId) {
       const [teamLeadRows] = await db.query(
         `
-        SELECT id
-        FROM users
-        WHERE id = ?
-          AND role = 'teamLead'
-          AND status = 'active'
+        SELECT u.user_id
+
+        FROM users u
+
+        INNER JOIN role r
+          ON r.role_id = u.role_id
+
+        WHERE u.user_id = ?
+          AND r.code = 'lead'
+          AND u.status = 'active'
+
         LIMIT 1
         `,
         [teamLeadId]
       );
 
-      // Stops creation when the selected Team Lead is invalid.
       if (teamLeadRows.length === 0) {
         return res.status(400).json({
           success: false,
-          message: "Selected Team Lead is invalid",
+          message:
+            "Selected Team Lead is invalid",
         });
       }
     }
 
-    // Validates every selected project before creating the employee.
-    if (projectIds.length > 0) {
+
+    // --------------------------------------------------------
+    // Validate projects
+    // --------------------------------------------------------
+
+    const uniqueProjectIds = [
+      ...new Set(
+        (Array.isArray(projectIds)
+          ? projectIds
+          : []
+        ).map(Number)
+      ),
+    ].filter(Number.isInteger);
+
+
+    if (uniqueProjectIds.length > 0) {
       const placeholders =
-        projectIds.map(() => "?").join(",");
+        uniqueProjectIds
+          .map(() => "?")
+          .join(",");
 
-      const [projectRows] = await db.query(
-        `
-        SELECT id
-        FROM projects
-        WHERE id IN (${placeholders})
-          AND status = 'active'
-        `,
-        projectIds
-      );
+      const [validProjects] =
+        await db.query(
+          `
+          SELECT project_id
+          FROM project
+          WHERE project_id IN (${placeholders})
+          `,
+          uniqueProjectIds
+        );
 
-      // Prevents invalid or inactive project assignments.
-      if (projectRows.length !== projectIds.length) {
+      if (
+        validProjects.length !==
+        uniqueProjectIds.length
+      ) {
         return res.status(400).json({
           success: false,
           message:
-            "One or more selected projects are invalid or inactive",
+            "One or more selected projects are invalid",
         });
       }
     }
 
-    // Gets a dedicated database connection for the creation transaction.
+
+    // --------------------------------------------------------
+    // Start transaction
+    // --------------------------------------------------------
+
     connection = await db.getConnection();
 
-    // Starts a transaction so user, team, and projects are created together.
     await connection.beginTransaction();
 
-    // Automatically generates the employee ID because the popup does not ask for one.
-    const employeeId =
-      await generateEmployeeId(connection);
 
-    // Automatically generates an initial password because the popup does not ask for one.
-    const temporaryPassword =
-      generateTemporaryPassword();
+    const employeeCode =
+      await generateEmployeeCode(connection);
 
-    // Hashes the temporary password before storing it.
-    const hashedPassword = await bcrypt.hash(
-      temporaryPassword,
-      10
-    );
 
-    // Creates the employee account.
-    const [result] = await connection.query(
-      `
-      INSERT INTO users
-      (
-        employee_id,
-        name,
-        email,
-        password,
-        role,
-        department,
-        designation,
-        status
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        employeeId,
-        name,
-        email,
-        hashedPassword,
-        role,
-        department,
-        designation,
-        status,
-      ]
-    );
+    const passwordHash =
+      await bcrypt.hash(password, 10);
 
-    // Stores the new user's database ID.
+
+    // --------------------------------------------------------
+    // Insert user
+    // --------------------------------------------------------
+
+    const [result] =
+      await connection.query(
+        `
+        INSERT INTO users
+        (
+          emp_code,
+          full_name,
+          username,
+          email,
+          password_hash,
+          auth_method,
+          department_id,
+          designation,
+          role_id,
+          team_lead_id,
+          status
+        )
+
+        VALUES
+        (?, ?, ?, ?, ?, 'password', ?, ?, ?, ?, ?)
+        `,
+        [
+          employeeCode,
+          name,
+          username,
+          email,
+          passwordHash,
+          departmentId || null,
+          designation || null,
+          roleId,
+          teamLeadId || null,
+          status,
+        ]
+      );
+
+
     const userId = result.insertId;
 
-    // Adds an Indexer to the selected Team Lead.
-    if (role === "indexer") {
-      await connection.query(
-        `
-        INSERT INTO team_members
-        (
-          team_lead_id,
-          member_id
-        )
-        VALUES (?, ?)
-        `,
-        [teamLeadId, userId]
-      );
-    }
 
-    // Assigns every selected project using the shared assignment table.
-    for (const projectId of projectIds) {
+    // --------------------------------------------------------
+    // Assign projects
+    // --------------------------------------------------------
+
+    for (const projectId of uniqueProjectIds) {
       await connection.query(
         `
-        INSERT INTO user_project_assignments
+        INSERT INTO project_assignment
         (
           user_id,
-          project_id
+          project_id,
+          assigned_by
         )
-        VALUES (?, ?)
+        VALUES (?, ?, ?)
         `,
-        [userId, projectId]
+        [
+          userId,
+          projectId,
+          req.user?.id || null,
+        ]
       );
     }
 
-    // Commits all user-management changes together.
+
     await connection.commit();
 
-    // Returns generated account details after successful creation.
+
     return res.status(201).json({
       success: true,
       message: "User created successfully",
 
       user: {
         id: userId,
-        employeeId,
+        employee_id: employeeCode,
         name,
+        username,
         email,
-        role,
       },
-
-      // Returns the temporary password only once so it can be given to the employee.
-      temporaryPassword,
     });
 
   } catch (error) {
-    // Rolls back all database changes if user creation fails.
     if (connection) {
       await connection.rollback();
     }
 
-    // Logs user-creation errors in the backend terminal.
     console.error("Create User Error:", error);
 
-    // Returns an error when the user cannot be created.
     return res.status(500).json({
       success: false,
       message: "Failed to create user",
@@ -456,7 +530,6 @@ const createUser = async (req, res) => {
     });
 
   } finally {
-    // Releases the transaction connection back to the database pool.
     if (connection) {
       connection.release();
     }
@@ -464,179 +537,369 @@ const createUser = async (req, res) => {
 };
 
 
-// Updates the editable fields shown in the Core Team Edit User popup.
+// ============================================================
+// 5. UPDATE USER
+// ============================================================
+
 const updateUser = async (req, res) => {
   let connection;
 
   try {
-    // Gets the selected employee's database ID from the URL.
-    const userId = req.params.id;
+    const userId = Number(req.params.id);
 
-    // Gets editable values from the User Details popup.
     const {
       name,
+      username,
       email,
-      department,
+      password,
+      roleId,
+      departmentId,
       designation,
-      role,
       teamLeadId,
-      status,
       projectIds,
+      status,
     } = req.body;
 
-    // Checks that the employee exists before updating.
-    const [existingRows] = await db.query(
+
+    if (!Number.isInteger(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID",
+      });
+    }
+
+
+    // --------------------------------------------------------
+    // Check user exists
+    // --------------------------------------------------------
+
+    const [existingUser] = await db.query(
       `
-      SELECT id, role
+      SELECT user_id
       FROM users
-      WHERE id = ?
+      WHERE user_id = ?
       LIMIT 1
       `,
       [userId]
     );
 
-    // Stops when the selected employee does not exist.
-    if (existingRows.length === 0) {
+    if (existingUser.length === 0) {
       return res.status(404).json({
         success: false,
         message: "User not found",
       });
     }
 
-    // Checks whether another account already uses the requested email.
-    if (email) {
-      const [duplicateEmail] = await db.query(
-        `
-        SELECT id
-        FROM users
-        WHERE email = ?
-          AND id != ?
-        LIMIT 1
-        `,
-        [email, userId]
-      );
 
-      // Prevents duplicate email addresses during editing.
-      if (duplicateEmail.length > 0) {
+    // --------------------------------------------------------
+    // Check duplicate username/email
+    // --------------------------------------------------------
+
+    if (email || username) {
+      const [duplicateRows] =
+        await db.query(
+          `
+          SELECT user_id
+
+          FROM users
+
+          WHERE user_id <> ?
+
+            AND (
+              (? IS NOT NULL AND email = ?)
+
+              OR
+
+              (? IS NOT NULL AND username = ?)
+            )
+
+          LIMIT 1
+          `,
+          [
+            userId,
+            email || null,
+            email || null,
+            username || null,
+            username || null,
+          ]
+        );
+
+      if (duplicateRows.length > 0) {
         return res.status(400).json({
           success: false,
-          message: "Email already exists",
+          message:
+            "Email or username already exists",
         });
       }
     }
 
-    // Determines which role the employee will have after the update.
-    const finalRole =
-      role || existingRows[0].role;
 
-    // Gets a dedicated connection for synchronised user updates.
+    // --------------------------------------------------------
+    // Validate role
+    // --------------------------------------------------------
+
+    if (roleId !== undefined) {
+      const [roleRows] = await db.query(
+        `
+        SELECT role_id
+        FROM role
+        WHERE role_id = ?
+        LIMIT 1
+        `,
+        [roleId]
+      );
+
+      if (roleRows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid role",
+        });
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Validate Team Lead
+    // --------------------------------------------------------
+
+    if (
+      teamLeadId !== undefined &&
+      teamLeadId !== null
+    ) {
+      const [teamLeadRows] =
+        await db.query(
+          `
+          SELECT u.user_id
+
+          FROM users u
+
+          INNER JOIN role r
+            ON r.role_id = u.role_id
+
+          WHERE u.user_id = ?
+            AND r.code = 'lead'
+            AND u.status = 'active'
+
+          LIMIT 1
+          `,
+          [teamLeadId]
+        );
+
+      if (teamLeadRows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Selected Team Lead is invalid",
+        });
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Validate project IDs
+    // --------------------------------------------------------
+
+    let uniqueProjectIds = null;
+
+    if (projectIds !== undefined) {
+      if (!Array.isArray(projectIds)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "projectIds must be an array",
+        });
+      }
+
+      uniqueProjectIds = [
+        ...new Set(
+          projectIds.map(Number)
+        ),
+      ].filter(Number.isInteger);
+
+
+      if (uniqueProjectIds.length > 0) {
+        const placeholders =
+          uniqueProjectIds
+            .map(() => "?")
+            .join(",");
+
+        const [validProjects] =
+          await db.query(
+            `
+            SELECT project_id
+            FROM project
+            WHERE project_id IN (${placeholders})
+            `,
+            uniqueProjectIds
+          );
+
+        if (
+          validProjects.length !==
+          uniqueProjectIds.length
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "One or more selected projects are invalid",
+          });
+        }
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Build UPDATE dynamically
+    // --------------------------------------------------------
+
+    const fields = [];
+    const values = [];
+
+
+    if (name !== undefined) {
+      fields.push("full_name = ?");
+      values.push(name);
+    }
+
+
+    if (username !== undefined) {
+      fields.push("username = ?");
+      values.push(username);
+    }
+
+
+    if (email !== undefined) {
+      fields.push("email = ?");
+      values.push(email);
+    }
+
+
+    if (departmentId !== undefined) {
+      fields.push("department_id = ?");
+      values.push(departmentId || null);
+    }
+
+
+    if (designation !== undefined) {
+      fields.push("designation = ?");
+      values.push(designation || null);
+    }
+
+
+    if (roleId !== undefined) {
+      fields.push("role_id = ?");
+      values.push(roleId);
+    }
+
+
+    if (teamLeadId !== undefined) {
+      fields.push("team_lead_id = ?");
+      values.push(teamLeadId || null);
+    }
+
+
+    if (status !== undefined) {
+      if (
+        !["active", "inactive"].includes(status)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid user status",
+        });
+      }
+
+      fields.push("status = ?");
+      values.push(status);
+    }
+
+
+    if (password) {
+      const passwordHash =
+        await bcrypt.hash(password, 10);
+
+      fields.push("password_hash = ?");
+      values.push(passwordHash);
+
+      fields.push("auth_method = ?");
+      values.push("password");
+    }
+
+
+    // --------------------------------------------------------
+    // Transaction
+    // --------------------------------------------------------
+
     connection = await db.getConnection();
 
-    // Starts a transaction so user, team, and project assignments stay synchronized.
     await connection.beginTransaction();
 
-    // Updates the basic employee fields.
-    await connection.query(
-      `
-      UPDATE users
-      SET
-        name = COALESCE(?, name),
-        email = COALESCE(?, email),
-        department = COALESCE(?, department),
-        designation = COALESCE(?, designation),
-        role = COALESCE(?, role),
-        status = COALESCE(?, status)
-      WHERE id = ?
-      `,
-      [
-        name || null,
-        email || null,
-        department || null,
-        designation || null,
-        role || null,
-        status || null,
-        userId,
-      ]
-    );
 
-    // Removes old team membership before rebuilding Indexer team assignment.
-    if (
-      finalRole !== "indexer" ||
-      teamLeadId !== undefined
-    ) {
+    if (fields.length > 0) {
+      values.push(userId);
+
       await connection.query(
         `
-        DELETE FROM team_members
-        WHERE member_id = ?
+        UPDATE users
+        SET ${fields.join(", ")}
+        WHERE user_id = ?
         `,
-        [userId]
+        values
       );
     }
 
-    // Adds the Indexer to the selected Team Lead when supplied.
-    if (
-      finalRole === "indexer" &&
-      teamLeadId !== undefined
-    ) {
-      await connection.query(
-        `
-        INSERT INTO team_members
-        (
-          team_lead_id,
-          member_id
-        )
-        VALUES (?, ?)
-        `,
-        [teamLeadId, userId]
-      );
-    }
 
-    // Replaces project assignments when projectIds is included in the request.
-    if (Array.isArray(projectIds)) {
-      // Removes the employee's previous direct project assignments.
+    // --------------------------------------------------------
+    // Replace project assignments only when projectIds
+    // was explicitly provided.
+    // --------------------------------------------------------
+
+    if (uniqueProjectIds !== null) {
+
       await connection.query(
         `
-        DELETE FROM user_project_assignments
+        DELETE FROM project_assignment
         WHERE user_id = ?
         `,
         [userId]
       );
 
-      // Adds the employee's newly selected projects.
-      for (const projectId of projectIds) {
+
+      for (const projectId of uniqueProjectIds) {
         await connection.query(
           `
-          INSERT INTO user_project_assignments
+          INSERT INTO project_assignment
           (
             user_id,
-            project_id
+            project_id,
+            assigned_by
           )
-          VALUES (?, ?)
+
+          VALUES (?, ?, ?)
           `,
-          [userId, projectId]
+          [
+            userId,
+            projectId,
+            req.user?.id || null,
+          ]
         );
       }
     }
 
-    // Commits all employee changes after successful validation and updates.
+
     await connection.commit();
 
-    // Returns success after updating the employee.
+
     return res.status(200).json({
       success: true,
       message: "User updated successfully",
     });
 
   } catch (error) {
-    // Rolls back employee changes if any update operation fails.
     if (connection) {
       await connection.rollback();
     }
 
-    // Logs user-update errors in the backend terminal.
     console.error("Update User Error:", error);
 
-    // Returns an error when the user cannot be updated.
     return res.status(500).json({
       success: false,
       message: "Failed to update user",
@@ -644,7 +907,6 @@ const updateUser = async (req, res) => {
     });
 
   } finally {
-    // Releases the database connection after the transaction finishes.
     if (connection) {
       connection.release();
     }
@@ -652,7 +914,10 @@ const updateUser = async (req, res) => {
 };
 
 
-// Exports all Core Team User Management functions.
+// ============================================================
+// EXPORTS
+// ============================================================
+
 module.exports = {
   getAllUsers,
   getUserTeamLeads,

@@ -1,66 +1,104 @@
-// Imports the MySQL database connection.
 const db = require("../config/db");
 
 
-// Gets all projects for the Core Team Project Master screen.
+// ============================================================
+// 1. GET ALL PROJECTS
+// ============================================================
+
 const getAllProjects = async (req, res) => {
   try {
-    // Loads project details together with assigned Team Lead and calculated team size.
-    const [projects] = await db.query(
-      `
+    const [projects] = await db.query(`
       SELECT
-        p.id,
+        p.project_id AS id,
         p.project_code,
         p.project_name,
         p.client_name,
-        p.reporting_category,
+
+        p.category_id,
+        rc.name AS reporting_category,
+
         p.auto_lock_time,
         p.start_date,
+        p.end_date,
         p.status,
-        p.team_lead_id,
-
-        u.name AS team_lead_name,
 
         COUNT(
-          DISTINCT upa.user_id
-        ) AS team_size
+          DISTINCT pa.user_id
+        ) AS team_size,
 
-      FROM projects p
+        GROUP_CONCAT(
+          DISTINCT
+          CASE
+            WHEN r.code = 'lead'
+            THEN u.full_name
+          END
+          ORDER BY u.full_name
+          SEPARATOR ', '
+        ) AS team_lead_name
+
+      FROM project p
+
+      LEFT JOIN reporting_category rc
+        ON rc.category_id = p.category_id
+
+      LEFT JOIN project_assignment pa
+        ON pa.project_id = p.project_id
 
       LEFT JOIN users u
-        ON u.id = p.team_lead_id
+        ON u.user_id = pa.user_id
 
-      LEFT JOIN user_project_assignments upa
-        ON upa.project_id = p.id
+      LEFT JOIN role r
+        ON r.role_id = u.role_id
 
       GROUP BY
-        p.id,
+        p.project_id,
         p.project_code,
         p.project_name,
         p.client_name,
-        p.reporting_category,
+        p.category_id,
+        rc.name,
         p.auto_lock_time,
         p.start_date,
-        p.status,
-        p.team_lead_id,
-        u.name
+        p.end_date,
+        p.status
 
-      ORDER BY p.id ASC
-      `
+      ORDER BY p.project_id ASC
+    `);
+
+    const formattedProjects = projects.map(
+      (project) => ({
+        id: project.id,
+        project_code: project.project_code,
+        project_name: project.project_name,
+        client_name: project.client_name,
+        category_id: project.category_id,
+        reporting_category:
+          project.reporting_category,
+        auto_lock_time:
+          project.auto_lock_time,
+        start_date: project.start_date,
+        end_date: project.end_date,
+        status: project.status,
+        team_size: Number(
+          project.team_size || 0
+        ),
+        team_lead_name:
+          project.team_lead_name || null,
+      })
     );
 
-    // Returns all Project Master records to the Core Team.
     return res.status(200).json({
       success: true,
-      count: projects.length,
-      projects,
+      count: formattedProjects.length,
+      projects: formattedProjects,
     });
 
   } catch (error) {
-    // Logs project-loading errors in the backend terminal.
-    console.error("Get All Projects Error:", error);
+    console.error(
+      "Get All Projects Error:",
+      error
+    );
 
-    // Returns an error when project data cannot be loaded.
     return res.status(500).json({
       success: false,
       message: "Failed to load projects",
@@ -70,275 +108,30 @@ const getAllProjects = async (req, res) => {
 };
 
 
-// Creates a new project from the Core Team Project Master popup.
-const createProject = async (req, res) => {
-  try {
-    // Gets all project fields submitted from the frontend or Postman.
-    const {
-      projectCode,
-      projectName,
-      clientName,
-      reportingCategory,
-      autoLockTime,
-      teamLeadId,
-      startDate,
-      status,
-    } = req.body;
+// ============================================================
+// 2. GET TEAM LEADS
+// ============================================================
 
-    // Checks required project fields before creating the project.
-    if (
-      !projectCode ||
-      !projectName ||
-      !reportingCategory ||
-      !status
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Project code, project name, reporting category and status are required",
-      });
-    }
-
-    // Checks whether the project code already exists.
-    const [existingProject] = await db.query(
-      `
-      SELECT id
-      FROM projects
-      WHERE project_code = ?
-      LIMIT 1
-      `,
-      [projectCode]
-    );
-
-    // Prevents duplicate project codes.
-    if (existingProject.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Project code already exists",
-      });
-    }
-
-    // Validates the assigned Team Lead when one is provided.
-    if (teamLeadId) {
-      const [teamLeadRows] = await db.query(
-        `
-        SELECT id
-        FROM users
-        WHERE id = ?
-          AND role = 'teamLead'
-          AND status = 'active'
-        LIMIT 1
-        `,
-        [teamLeadId]
-      );
-
-      // Stops project creation when the selected Team Lead is invalid.
-      if (teamLeadRows.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Selected Team Lead is invalid",
-        });
-      }
-    }
-
-    // Inserts the new project into the projects table.
-    const [result] = await db.query(
-      `
-      INSERT INTO projects
-      (
-        project_code,
-        project_name,
-        client_name,
-        reporting_category,
-        auto_lock_time,
-        team_lead_id,
-        start_date,
-        status
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        projectCode,
-        projectName,
-        clientName || null,
-        reportingCategory,
-        autoLockTime || null,
-        teamLeadId || null,
-        startDate || null,
-        status,
-      ]
-    );
-
-    // Returns success with the newly created project ID.
-    return res.status(201).json({
-      success: true,
-      message: "Project created successfully",
-      projectId: result.insertId,
-    });
-
-  } catch (error) {
-    // Logs project-creation errors in the backend terminal.
-    console.error("Create Project Error:", error);
-
-    // Returns an error when project creation fails.
-    return res.status(500).json({
-      success: false,
-      message: "Failed to create project",
-      error: error.message,
-    });
-  }
-};
-
-
-// Updates an existing project from the Core Team Project Master edit popup.
-const updateProject = async (req, res) => {
-  try {
-    // Gets the project ID from the request URL.
-    const projectId = req.params.id;
-
-    // Gets the editable project fields from the request body.
-    const {
-      projectCode,
-      projectName,
-      clientName,
-      reportingCategory,
-      autoLockTime,
-      teamLeadId,
-      startDate,
-      status,
-    } = req.body;
-
-    // Checks whether the selected project exists.
-    const [projectRows] = await db.query(
-      `
-      SELECT id
-      FROM projects
-      WHERE id = ?
-      LIMIT 1
-      `,
-      [projectId]
-    );
-
-    // Stops the update when the project cannot be found.
-    if (projectRows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Project not found",
-      });
-    }
-
-    // Checks whether another project already uses the requested project code.
-    if (projectCode) {
-      const [duplicateCode] = await db.query(
-        `
-        SELECT id
-        FROM projects
-        WHERE project_code = ?
-          AND id != ?
-        LIMIT 1
-        `,
-        [projectCode, projectId]
-      );
-
-      // Prevents duplicate project codes during editing.
-      if (duplicateCode.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Project code already exists",
-        });
-      }
-    }
-
-    // Validates the assigned Team Lead when one is provided.
-    if (teamLeadId) {
-      const [teamLeadRows] = await db.query(
-        `
-        SELECT id
-        FROM users
-        WHERE id = ?
-          AND role = 'teamLead'
-          AND status = 'active'
-        LIMIT 1
-        `,
-        [teamLeadId]
-      );
-
-      // Stops the update when the selected Team Lead is invalid.
-      if (teamLeadRows.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Selected Team Lead is invalid",
-        });
-      }
-    }
-
-    // Updates only the Project Master fields for the selected project.
-    await db.query(
-      `
-      UPDATE projects
-      SET
-        project_code = COALESCE(?, project_code),
-        project_name = COALESCE(?, project_name),
-        client_name = ?,
-        reporting_category = COALESCE(?, reporting_category),
-        auto_lock_time = ?,
-        team_lead_id = ?,
-        start_date = ?,
-        status = COALESCE(?, status)
-      WHERE id = ?
-      `,
-      [
-        projectCode || null,
-        projectName || null,
-        clientName ?? null,
-        reportingCategory || null,
-        autoLockTime ?? null,
-        teamLeadId ?? null,
-        startDate ?? null,
-        status || null,
-        projectId,
-      ]
-    );
-
-    // Returns success after updating the project.
-    return res.status(200).json({
-      success: true,
-      message: "Project updated successfully",
-    });
-
-  } catch (error) {
-    // Logs project-update errors in the backend terminal.
-    console.error("Update Project Error:", error);
-
-    // Returns an error when the project cannot be updated.
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update project",
-      error: error.message,
-    });
-  }
-};
-
-
-// Gets active Team Leads for the Project Master "Assigned team" dropdown.
 const getTeamLeads = async (req, res) => {
   try {
-    // Loads active Team Lead accounts available for project assignment.
-    const [teamLeads] = await db.query(
-      `
+    const [teamLeads] = await db.query(`
       SELECT
-        id,
-        employee_id,
-        name,
-        email
-      FROM users
-      WHERE role = 'teamLead'
-        AND status = 'active'
-      ORDER BY name ASC
-      `
-    );
+        u.user_id AS id,
+        u.emp_code AS employee_id,
+        u.full_name AS name,
+        u.email
 
-    // Returns Team Leads for the Project Master dropdown.
+      FROM users u
+
+      INNER JOIN role r
+        ON r.role_id = u.role_id
+
+      WHERE r.code = 'lead'
+        AND u.status = 'active'
+
+      ORDER BY u.full_name ASC
+    `);
+
     return res.status(200).json({
       success: true,
       count: teamLeads.length,
@@ -346,10 +139,11 @@ const getTeamLeads = async (req, res) => {
     });
 
   } catch (error) {
-    // Logs Team Lead dropdown errors in the backend terminal.
-    console.error("Get Team Leads Error:", error);
+    console.error(
+      "Get Team Leads Error:",
+      error
+    );
 
-    // Returns an error when Team Leads cannot be loaded.
     return res.status(500).json({
       success: false,
       message: "Failed to load Team Leads",
@@ -359,10 +153,553 @@ const getTeamLeads = async (req, res) => {
 };
 
 
-// Exports all Project Master controller functions so the routes can use them.
+// ============================================================
+// 3. GET REPORTING CATEGORIES
+// ============================================================
+
+const getReportingCategories = async (
+  req,
+  res
+) => {
+  try {
+    const [categories] = await db.query(`
+      SELECT
+        category_id,
+        name
+      FROM reporting_category
+      ORDER BY name ASC
+    `);
+
+    return res.status(200).json({
+      success: true,
+      count: categories.length,
+      categories,
+    });
+
+  } catch (error) {
+    console.error(
+      "Get Reporting Categories Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to load reporting categories",
+      error: error.message,
+    });
+  }
+};
+
+
+// ============================================================
+// 4. CREATE PROJECT
+// ============================================================
+
+const createProject = async (req, res) => {
+  let connection;
+
+  try {
+    const {
+      projectCode,
+      projectName,
+      clientName,
+      categoryId,
+      autoLockTime,
+      teamLeadId,
+      startDate,
+      endDate,
+      status = "active",
+    } = req.body;
+
+
+    // --------------------------------------------------------
+    // Required fields
+    // --------------------------------------------------------
+    if (
+      !projectCode ||
+      !projectName ||
+      !status
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Project code, project name and status are required",
+      });
+    }
+
+
+    // --------------------------------------------------------
+    // Validate status
+    // --------------------------------------------------------
+    if (
+      !["active", "inactive"].includes(status)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid project status",
+      });
+    }
+
+
+    // --------------------------------------------------------
+    // Duplicate project code
+    // --------------------------------------------------------
+    const [existingProject] =
+      await db.query(
+        `
+        SELECT project_id
+        FROM project
+        WHERE project_code = ?
+        LIMIT 1
+        `,
+        [projectCode]
+      );
+
+    if (existingProject.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Project code already exists",
+      });
+    }
+
+
+    // --------------------------------------------------------
+    // Validate reporting category
+    // --------------------------------------------------------
+    if (categoryId) {
+      const [categoryRows] =
+        await db.query(
+          `
+          SELECT category_id
+          FROM reporting_category
+          WHERE category_id = ?
+          LIMIT 1
+          `,
+          [categoryId]
+        );
+
+      if (categoryRows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Selected reporting category is invalid",
+        });
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Validate Team Lead
+    // --------------------------------------------------------
+    if (teamLeadId) {
+      const [teamLeadRows] =
+        await db.query(
+          `
+          SELECT u.user_id
+          FROM users u
+
+          INNER JOIN role r
+            ON r.role_id = u.role_id
+
+          WHERE u.user_id = ?
+            AND r.code = 'lead'
+            AND u.status = 'active'
+
+          LIMIT 1
+          `,
+          [teamLeadId]
+        );
+
+      if (teamLeadRows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Selected Team Lead is invalid",
+        });
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Begin transaction
+    // --------------------------------------------------------
+    connection = await db.getConnection();
+
+    await connection.beginTransaction();
+
+
+    // --------------------------------------------------------
+    // Create project
+    // --------------------------------------------------------
+    const [result] =
+      await connection.query(
+        `
+        INSERT INTO project
+        (
+          project_code,
+          project_name,
+          client_name,
+          category_id,
+          status,
+          start_date,
+          end_date,
+          auto_lock_time
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          projectCode,
+          projectName,
+          clientName || null,
+          categoryId || null,
+          status,
+          startDate || null,
+          endDate || null,
+          autoLockTime || null,
+        ]
+      );
+
+    const projectId = result.insertId;
+
+
+    // --------------------------------------------------------
+    // Assign Team Lead to project
+    // --------------------------------------------------------
+    if (teamLeadId) {
+      await connection.query(
+        `
+        INSERT INTO project_assignment
+        (
+          user_id,
+          project_id,
+          assigned_by
+        )
+        VALUES (?, ?, ?)
+        `,
+        [
+          teamLeadId,
+          projectId,
+          req.user?.id || null,
+        ]
+      );
+    }
+
+
+    await connection.commit();
+
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Project created successfully",
+      projectId,
+    });
+
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+
+    console.error(
+      "Create Project Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to create project",
+      error: error.message,
+    });
+
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};
+
+
+// ============================================================
+// 5. UPDATE PROJECT
+// ============================================================
+
+const updateProject = async (req, res) => {
+  let connection;
+
+  try {
+    const projectId = req.params.id;
+
+    const {
+      projectCode,
+      projectName,
+      clientName,
+      categoryId,
+      autoLockTime,
+      teamLeadId,
+      startDate,
+      endDate,
+      status,
+    } = req.body;
+
+
+    // --------------------------------------------------------
+    // Verify project exists
+    // --------------------------------------------------------
+    const [projectRows] =
+      await db.query(
+        `
+        SELECT project_id
+        FROM project
+        WHERE project_id = ?
+        LIMIT 1
+        `,
+        [projectId]
+      );
+
+    if (projectRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
+    }
+
+
+    // --------------------------------------------------------
+    // Duplicate project code check
+    // --------------------------------------------------------
+    if (projectCode) {
+      const [duplicateRows] =
+        await db.query(
+          `
+          SELECT project_id
+          FROM project
+          WHERE project_code = ?
+            AND project_id <> ?
+          LIMIT 1
+          `,
+          [
+            projectCode,
+            projectId,
+          ]
+        );
+
+      if (duplicateRows.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Project code already exists",
+        });
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Validate category
+    // --------------------------------------------------------
+    if (categoryId) {
+      const [categoryRows] =
+        await db.query(
+          `
+          SELECT category_id
+          FROM reporting_category
+          WHERE category_id = ?
+          LIMIT 1
+          `,
+          [categoryId]
+        );
+
+      if (categoryRows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Selected reporting category is invalid",
+        });
+      }
+    }
+
+
+    // --------------------------------------------------------
+    // Validate Team Lead
+    // --------------------------------------------------------
+    if (
+      teamLeadId !== undefined &&
+      teamLeadId !== null
+    ) {
+      const [teamLeadRows] =
+        await db.query(
+          `
+          SELECT u.user_id
+          FROM users u
+
+          INNER JOIN role r
+            ON r.role_id = u.role_id
+
+          WHERE u.user_id = ?
+            AND r.code = 'lead'
+            AND u.status = 'active'
+
+          LIMIT 1
+          `,
+          [teamLeadId]
+        );
+
+      if (teamLeadRows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Selected Team Lead is invalid",
+        });
+      }
+    }
+
+
+    connection = await db.getConnection();
+
+    await connection.beginTransaction();
+
+
+    // --------------------------------------------------------
+    // Update project
+    // --------------------------------------------------------
+    await connection.query(
+      `
+      UPDATE project
+
+      SET
+        project_code =
+          COALESCE(?, project_code),
+
+        project_name =
+          COALESCE(?, project_name),
+
+        client_name =
+          COALESCE(?, client_name),
+
+        category_id =
+          COALESCE(?, category_id),
+
+        auto_lock_time =
+          COALESCE(?, auto_lock_time),
+
+        start_date =
+          COALESCE(?, start_date),
+
+        end_date =
+          COALESCE(?, end_date),
+
+        status =
+          COALESCE(?, status)
+
+      WHERE project_id = ?
+      `,
+      [
+        projectCode || null,
+        projectName || null,
+        clientName ?? null,
+        categoryId ?? null,
+        autoLockTime ?? null,
+        startDate ?? null,
+        endDate ?? null,
+        status || null,
+        projectId,
+      ]
+    );
+
+
+    // --------------------------------------------------------
+    // Update Team Lead assignment
+    //
+    // Only runs if teamLeadId was included.
+    // --------------------------------------------------------
+    if (teamLeadId !== undefined) {
+
+      // Remove existing lead assignments.
+      await connection.query(
+        `
+        DELETE pa
+
+        FROM project_assignment pa
+
+        INNER JOIN users u
+          ON u.user_id = pa.user_id
+
+        INNER JOIN role r
+          ON r.role_id = u.role_id
+
+        WHERE pa.project_id = ?
+          AND r.code = 'lead'
+        `,
+        [projectId]
+      );
+
+
+      // Add selected Team Lead.
+      if (teamLeadId) {
+        await connection.query(
+          `
+          INSERT INTO project_assignment
+          (
+            user_id,
+            project_id,
+            assigned_by
+          )
+          VALUES (?, ?, ?)
+          `,
+          [
+            teamLeadId,
+            projectId,
+            req.user?.id || null,
+          ]
+        );
+      }
+    }
+
+
+    await connection.commit();
+
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Project updated successfully",
+    });
+
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+
+    console.error(
+      "Update Project Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to update project",
+      error: error.message,
+    });
+
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};
+
+
+// ============================================================
+// EXPORTS
+// ============================================================
+
 module.exports = {
   getAllProjects,
   createProject,
   updateProject,
   getTeamLeads,
+  getReportingCategories,
 };
