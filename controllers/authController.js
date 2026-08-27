@@ -39,10 +39,10 @@ const login = async (req, res) => {
         ON r.role_id = u.role_id
       LEFT JOIN department d
         ON d.department_id = u.department_id
-      WHERE u.email = ?
+      WHERE u.email = ? OR u.username = ?
       LIMIT 1
       `,
-      [email]
+      [email, email]
     );
 
     if (users.length === 0) {
