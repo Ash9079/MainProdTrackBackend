@@ -1,6 +1,5 @@
 const db = require("../../config/db");
 
-// Gets Indexer dashboard summary data
 const getIndexerDashboard = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -8,13 +7,13 @@ const getIndexerDashboard = async (req, res) => {
     const [productionRows] = await db.query(
       `
       SELECT
-        COALESCE(SUM(documents_received), 0) AS total_received,
-        COALESCE(SUM(documents_completed), 0) AS total_completed,
+        COALESCE(SUM(docs_received), 0) AS total_received,
+        COALESCE(SUM(docs_completed), 0) AS total_completed,
         COALESCE(
-          SUM(documents_received - documents_completed),
+          SUM(docs_received - docs_completed),
           0
         ) AS total_pending
-      FROM daily_entries
+      FROM daily_entry
       WHERE user_id = ?
       `,
       [userId]
@@ -23,8 +22,8 @@ const getIndexerDashboard = async (req, res) => {
     const [todayRows] = await db.query(
       `
       SELECT
-        COALESCE(SUM(documents_completed), 0) AS today_productivity
-      FROM daily_entries
+        COALESCE(SUM(docs_completed), 0) AS today_productivity
+      FROM daily_entry
       WHERE user_id = ?
         AND production_date = CURDATE()
       `,
@@ -34,7 +33,7 @@ const getIndexerDashboard = async (req, res) => {
     const [projectRows] = await db.query(
       `
       SELECT COUNT(*) AS assigned_projects
-      FROM user_project_assignments
+      FROM project_assignment
       WHERE user_id = ?
       `,
       [userId]
@@ -43,9 +42,11 @@ const getIndexerDashboard = async (req, res) => {
     const [correctionRows] = await db.query(
       `
       SELECT COUNT(*) AS pending_corrections
-      FROM correction_requests
-      WHERE user_id = ?
-        AND status = 'PENDING'
+      FROM correction_request cr
+      JOIN correction_status cs
+        ON cs.status_id = cr.status_id
+      WHERE cr.requested_by = ?
+        AND cs.code = 'pending'
       `,
       [userId]
     );
@@ -53,7 +54,7 @@ const getIndexerDashboard = async (req, res) => {
     const [notificationRows] = await db.query(
       `
       SELECT COUNT(*) AS unread_notifications
-      FROM notifications
+      FROM notification
       WHERE user_id = ?
         AND is_read = 0
       `,
@@ -62,21 +63,25 @@ const getIndexerDashboard = async (req, res) => {
 
     const [guideRows] = await db.query(
       `
-      SELECT COUNT(*) AS pending_guides
-      FROM guides g
-
-      JOIN user_project_assignments upa
-        ON upa.project_id = g.project_id
-        AND upa.user_id = ?
-
-      LEFT JOIN guide_acknowledgements ga
-        ON ga.guide_id = g.id
-        AND ga.user_id = ?
-
-      WHERE g.status = 'active'
-        AND ga.id IS NULL
+      SELECT
+        COUNT(DISTINCT gv.version_id) AS pending_guides
+      FROM project_assignment pa
+      JOIN guide g
+        ON g.project_id = pa.project_id
+      JOIN guide_version gv
+        ON gv.guide_id = g.guide_id
+       AND gv.is_latest = 1
+       AND gv.requires_ack = 1
+      LEFT JOIN guide_acknowledgement ga
+        ON ga.version_id = gv.version_id
+       AND ga.user_id = pa.user_id
+      WHERE pa.user_id = ?
+        AND (
+          ga.ack_id IS NULL
+          OR ga.status = 'unread'
+        )
       `,
-      [userId, userId]
+      [userId]
     );
 
     const production = productionRows[0];
