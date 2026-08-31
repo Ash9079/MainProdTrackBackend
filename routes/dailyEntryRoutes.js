@@ -7,9 +7,18 @@ const {
   createEntry,
   getMyEntries,
   updateEntry,
+  getPendingTeamEntries,
+  reviewEntry,
 } = require("../controllers/dailyEntryController");
 
 const router = express.Router();
+
+router.get(
+  "/team/pending",
+  authenticate,
+  allowRoles("teamLead"),
+  getPendingTeamEntries
+);
 
 router.get(
   "/my",
@@ -30,6 +39,13 @@ router.patch(
   authenticate,
   allowRoles("indexer", "teamLead"),
   updateEntry
+);
+
+router.patch(
+  "/:id/review",
+  authenticate,
+  allowRoles("teamLead"),
+  reviewEntry
 );
 
 module.exports = router;

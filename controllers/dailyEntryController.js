@@ -511,8 +511,236 @@ const updateEntry = async (req, res) => {
   }
 };
 
+const getPendingTeamEntries = async (req, res) => {
+  try {
+    const teamLeadId = req.user.id;
+
+    const [entries] = await db.query(
+      `
+      SELECT
+        de.entry_id AS id,
+        de.entry_id,
+        DATE_FORMAT(
+          de.production_date, '%Y-%m-%d'
+        ) AS production_date,
+        de.batch_ref AS batch_job_id,
+
+        u.user_id AS employee_id,
+        u.emp_code AS employee_code,
+        u.full_name AS employee_name,
+
+        p.project_id,
+        p.project_name,
+        rc.name AS reporting_category,
+
+        de.docs_received AS documents_received,
+        de.docs_completed AS documents_completed,
+        de.batches_processed,
+        de.errors_flagged,
+        de.remarks AS notes,
+
+        es.code AS status,
+        de.submitted_at
+
+      FROM daily_entry de
+
+      JOIN users u
+        ON u.user_id = de.user_id
+
+      JOIN project p
+        ON p.project_id = de.project_id
+
+      JOIN entry_status es
+        ON es.status_id = de.status_id
+
+      LEFT JOIN reporting_category rc
+        ON rc.category_id = de.category_id
+
+      WHERE u.team_lead_id = ?
+        AND de.user_id <> ?
+        AND es.code = 'submitted'
+        AND de.locked_at IS NULL
+
+        AND EXISTS (
+          SELECT 1
+          FROM project_assignment pa
+          WHERE pa.project_id = de.project_id
+            AND pa.user_id = ?
+        )
+
+      ORDER BY de.submitted_at ASC, de.entry_id ASC
+      `,
+      [teamLeadId, teamLeadId, teamLeadId]
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: entries.length,
+      entries,
+    });
+  } catch (error) {
+    console.error("Get Pending Team Entries Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load submitted team entries",
+    });
+  }
+};
+
+const reviewEntry = async (req, res) => {
+  let connection;
+
+  try {
+    const teamLeadId = req.user.id;
+    const entryId = Number(req.params.id);
+
+    if (req.user.role !== "teamLead") {
+      return res.status(403).json({
+        success: false,
+        message: "Only Team Leads can review entries",
+      });
+    }
+
+    if (!Number.isSafeInteger(entryId) || entryId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid entry ID is required",
+      });
+    }
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    const reject = (httpStatus, message) => {
+      throw Object.assign(new Error(message), { httpStatus });
+    };
+
+    // Lock the entry and check the same access rules as the pending list.
+    const [entries] = await connection.query(
+      `
+      SELECT
+        de.entry_id,
+        de.status_id,
+        de.locked_at,
+        es.code AS status
+      FROM daily_entry de
+
+      JOIN users u
+        ON u.user_id = de.user_id
+
+      JOIN entry_status es
+        ON es.status_id = de.status_id
+
+      WHERE de.entry_id = ?
+        AND u.team_lead_id = ?
+        AND de.user_id <> ?
+
+        AND EXISTS (
+          SELECT 1
+          FROM project_assignment pa
+          WHERE pa.project_id = de.project_id
+            AND pa.user_id = ?
+        )
+
+      FOR UPDATE
+      `,
+      [entryId, teamLeadId, teamLeadId, teamLeadId]
+    );
+
+    if (entries.length === 0) {
+      reject(404, "Team entry not found or not accessible");
+    }
+
+    const entry = entries[0];
+
+    if (entry.status !== "submitted" || entry.locked_at !== null) {
+      reject(409, "Only an unlocked submitted entry can be reviewed");
+    }
+
+    const [statuses] = await connection.query(
+      `
+      SELECT status_id
+      FROM entry_status
+      WHERE code = 'reviewed'
+      LIMIT 1
+      `
+    );
+
+    if (statuses.length === 0) {
+      reject(500, "Reviewed status is not configured");
+    }
+
+    const [result] = await connection.query(
+      `
+      UPDATE daily_entry
+      SET status_id = ?,
+          reviewed_by = ?,
+          reviewed_at = NOW()
+      WHERE entry_id = ?
+        AND status_id = ?
+        AND locked_at IS NULL
+      `,
+      [
+        statuses[0].status_id,
+        teamLeadId,
+        entryId,
+        entry.status_id,
+      ]
+    );
+
+    if (result.affectedRows !== 1) {
+      reject(409, "Entry changed. Refresh the list and try again");
+    }
+
+    await connection.query(
+      `
+      INSERT INTO audit_log
+        (user_id, action, entity_type, entity_ref, detail)
+      VALUES (?, ?, ?, ?, ?)
+      `,
+      [
+        teamLeadId,
+        "Reviewed daily entry",
+        "daily_entry",
+        String(entryId),
+        "Status changed from submitted to reviewed",
+      ]
+    );
+
+    await connection.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "Daily entry reviewed successfully",
+      entryId,
+      status: "reviewed",
+    });
+  } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("Review rollback error:", rollbackError);
+      }
+    }
+
+    console.error("Review Entry Error:", error);
+
+    return res.status(error.httpStatus || 500).json({
+      success: false,
+      message: error.httpStatus
+        ? error.message
+        : "Failed to review daily entry",
+    });
+  } finally {
+    if (connection) connection.release();
+  }
+};
 module.exports = {
   createEntry,
   getMyEntries,
   updateEntry,
+  getPendingTeamEntries,
+  reviewEntry,
 };
