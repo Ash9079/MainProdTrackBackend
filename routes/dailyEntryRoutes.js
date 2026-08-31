@@ -6,6 +6,7 @@ const allowRoles = require("../middleware/roleMiddleware");
 const {
   createEntry,
   getMyEntries,
+  updateEntry,
 } = require("../controllers/dailyEntryController");
 
 const router = express.Router();
@@ -22,6 +23,13 @@ router.post(
   authenticate,
   allowRoles("indexer","teamLead"),
   createEntry
+);
+
+router.patch(
+  "/:id",
+  authenticate,
+  allowRoles("indexer", "teamLead"),
+  updateEntry
 );
 
 module.exports = router;

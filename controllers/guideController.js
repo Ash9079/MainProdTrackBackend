@@ -10,172 +10,65 @@ const path = require("path");
 
 const getLatestGuide = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const role = req.user.role;
+    const [guides] = await db.query(
+      `
+      SELECT
+        gv.version_id AS id,
+        gv.version_id,
+        g.guide_id,
+        g.project_id,
+        g.title,
+        p.project_name,
+        gv.version_label AS version,
+        gv.change_summary AS description,
+        gv.uploaded_at AS updated_date,
+        gv.effective_date,
+        gv.requires_ack,
 
-    let guides = [];
+        CASE
+          WHEN ga.status = 'read' THEN 1
+          ELSE 0
+        END AS acknowledged
 
-    // ==================================================
-    // INDEXER
-    // Gets latest guide from projects assigned directly
-    // to the logged-in Indexer.
-    // ==================================================
+      FROM project_assignment pa
 
-    if (role === "indexer") {
-      [guides] = await db.query(
-        `
-        SELECT
-          g.id,
-          g.project_id,
-          g.title,
-          g.version,
-          g.description,
-          g.updated_date,
-          g.effective_date,
-          g.file_url,
-          g.status,
-          g.created_at,
+      JOIN project p
+        ON p.project_id = pa.project_id
 
-          p.project_name,
+      JOIN guide g
+        ON g.project_id = p.project_id
 
-          CASE
-            WHEN ga.id IS NULL THEN 0
-            ELSE 1
-          END AS acknowledged
+      JOIN guide_version gv
+        ON gv.guide_id = g.guide_id
 
-        FROM guides g
+      LEFT JOIN guide_acknowledgement ga
+        ON ga.version_id = gv.version_id
+       AND ga.user_id = pa.user_id
 
-        JOIN projects p
-          ON p.id = g.project_id
+      WHERE pa.user_id = ?
+        AND p.status = 'active'
+        AND gv.is_latest = 1
 
-        JOIN user_project_assignments upa
-          ON upa.project_id = g.project_id
-          AND upa.user_id = ?
+      ORDER BY gv.uploaded_at DESC, gv.version_id DESC
+      `,
+      [req.user.id]
+    );
 
-        LEFT JOIN guide_acknowledgements ga
-          ON ga.guide_id = g.id
-          AND ga.user_id = ?
-
-        WHERE g.status = 'active'
-
-        ORDER BY g.created_at DESC
-
-        LIMIT 1
-        `,
-        [userId, userId]
-      );
-    }
-
-    // ==================================================
-    // TEAM LEAD
-    // Gets latest guide from projects assigned to
-    // members belonging to the logged-in Team Lead.
-    // ==================================================
-
-    else if (role === "teamLead") {
-      [guides] = await db.query(
-        `
-        SELECT
-          g.id,
-          g.project_id,
-          g.title,
-          g.version,
-          g.description,
-          g.updated_date,
-          g.effective_date,
-          g.file_url,
-          g.status,
-          g.created_at,
-
-          p.project_name,
-
-          CASE
-            WHEN ga.id IS NULL THEN 0
-            ELSE 1
-          END AS acknowledged
-
-        FROM guides g
-
-        JOIN projects p
-          ON p.id = g.project_id
-
-        JOIN user_project_assignments upa
-          ON upa.project_id = g.project_id
-
-        JOIN team_members tm
-          ON tm.member_id = upa.user_id
-          AND tm.team_lead_id = ?
-
-        LEFT JOIN guide_acknowledgements ga
-          ON ga.guide_id = g.id
-          AND ga.user_id = ?
-
-        WHERE g.status = 'active'
-
-        GROUP BY
-          g.id,
-          g.project_id,
-          g.title,
-          g.version,
-          g.description,
-          g.updated_date,
-          g.effective_date,
-          g.file_url,
-          g.status,
-          g.created_at,
-          p.project_name,
-          ga.id
-
-        ORDER BY g.created_at DESC
-
-        LIMIT 1
-        `,
-        [userId, userId]
-      );
-    }
-
-    // ==================================================
-    // UNSUPPORTED ROLE
-    // ==================================================
-
-    else {
-      return res.status(403).json({
-        success: false,
-        message: "You are not allowed to access guides",
-      });
-    }
-
-    // ==================================================
-    // NO GUIDE FOUND
-    // ==================================================
-
-    if (guides.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No active guide found",
-      });
-    }
-
-    // ==================================================
-    // SUCCESS
-    // ==================================================
-
-    return res.status(200).json({
+    return res.json({
       success: true,
-      guide: guides[0],
+      count: guides.length,
+      guides,
+      guide: guides[0] || null,
     });
-
   } catch (error) {
     console.error("Get Latest Guide Error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Failed to load guide",
-      error: error.message,
+      message: "Failed to load indexing guides",
     });
   }
 };
-
 
 // ======================================================
 // ACKNOWLEDGE GUIDE
@@ -184,152 +77,179 @@ const getLatestGuide = async (req, res) => {
 // Priya acknowledging a guide does NOT automatically
 // acknowledge it for Rohan.
 // ======================================================
-
 const acknowledgeGuide = async (req, res) => {
   try {
     const userId = req.user.id;
-    const guideId = req.params.id;
+    const versionId = Number(req.params.id);
 
-    // Check whether guide exists and is active
-    const [guides] = await db.query(
+    if (!Number.isSafeInteger(versionId) || versionId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid guide version ID is required",
+      });
+    }
+
+    // Only allow the latest guide for an assigned, active project.
+    const [versions] = await db.query(
       `
-      SELECT id
-      FROM guides
-      WHERE id = ?
-        AND status = 'active'
+      SELECT gv.version_id
+      FROM guide_version gv
+
+      JOIN guide g
+        ON g.guide_id = gv.guide_id
+
+      JOIN project p
+        ON p.project_id = g.project_id
+
+      JOIN project_assignment pa
+        ON pa.project_id = p.project_id
+
+      WHERE gv.version_id = ?
+        AND gv.is_latest = 1
+        AND p.status = 'active'
+        AND pa.user_id = ?
+
+      LIMIT 1
       `,
-      [guideId]
+      [versionId, userId]
     );
 
-    if (guides.length === 0) {
+    if (versions.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Guide not found",
+        message: "Latest assigned guide version not found",
       });
     }
 
-    // Check whether this user already acknowledged it
-    const [existing] = await db.query(
-      `
-      SELECT id
-      FROM guide_acknowledgements
-      WHERE guide_id = ?
-        AND user_id = ?
-      `,
-      [guideId, userId]
-    );
-
-    if (existing.length > 0) {
-      return res.status(200).json({
-        success: true,
-        message: "Guide already acknowledged",
-      });
-    }
-
-    // Save acknowledgement for this user
+    // Create an acknowledgement or change an existing unread row to read.
+    // Repeated requests preserve the original acknowledgement time.
     await db.query(
       `
-      INSERT INTO guide_acknowledgements
+      INSERT INTO guide_acknowledgement
       (
-        guide_id,
+        version_id,
         user_id,
+        status,
         acknowledged_at
       )
-      VALUES (?, ?, NOW())
+      VALUES (?, ?, 'read', NOW())
+
+      ON DUPLICATE KEY UPDATE
+        acknowledged_at = IF(
+          status = 'read',
+          COALESCE(acknowledged_at, NOW()),
+          NOW()
+        ),
+        status = 'read'
       `,
-      [guideId, userId]
+      [versionId, userId]
     );
 
     return res.status(200).json({
       success: true,
       message: "Guide acknowledged successfully",
+      versionId,
     });
-
   } catch (error) {
     console.error("Acknowledge Guide Error:", error);
 
     return res.status(500).json({
       success: false,
       message: "Failed to acknowledge guide",
-      error: error.message,
     });
   }
 };
 
 
-// Gets guide version history for an allowed project
+// Gets all guide versions for an assigned project.
 const getGuideHistory = async (req, res) => {
   try {
     const userId = req.user.id;
-    const role = req.user.role;
-    const projectId = req.params.projectId;
+    const projectId = Number(req.params.projectId);
 
-    let accessRows = [];
-
-    // Checks project access for Indexer
-    if (role === "indexer") {
-      [accessRows] = await db.query(
-        `
-        SELECT id
-        FROM user_project_assignments
-        WHERE user_id = ?
-          AND project_id = ?
-        LIMIT 1
-        `,
-        [userId, projectId]
-      );
-    }
-
-    // Checks project access for Team Lead through team members
-    else if (role === "teamLead") {
-      [accessRows] = await db.query(
-        `
-        SELECT tm.id
-        FROM team_members tm
-
-        JOIN user_project_assignments upa
-          ON upa.user_id = tm.member_id
-
-        WHERE tm.team_lead_id = ?
-          AND upa.project_id = ?
-
-        LIMIT 1
-        `,
-        [userId, projectId]
-      );
-    }
-
-    if (accessRows.length === 0) {
+    if (!["indexer", "teamLead"].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
-        message: "You are not allowed to view this guide history",
+        message: "You are not allowed to view guide history",
+      });
+    }
+
+    if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid project ID is required",
+      });
+    }
+
+    // Same assignment rule used by the latest-guide endpoint.
+    const [assignments] = await db.query(
+      `
+      SELECT assignment_id
+      FROM project_assignment
+      WHERE user_id = ?
+        AND project_id = ?
+      LIMIT 1
+      `,
+      [userId, projectId]
+    );
+
+    if (assignments.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: "This project is not assigned to you",
       });
     }
 
     const [history] = await db.query(
       `
       SELECT
-        g.id,
+        gv.version_id AS id,
+        gv.version_id,
+        g.guide_id,
         g.project_id,
         g.title,
-        g.version,
-        g.description,
-        g.updated_date,
-        g.effective_date,
-        g.file_url,
-        g.status,
-        g.created_at,
-        p.project_name
-      FROM guides g
+        p.project_name,
 
-      JOIN projects p
-        ON p.id = g.project_id
+        gv.version_label AS version,
+        gv.change_summary AS description,
+        gv.uploaded_at AS updated_date,
+        gv.effective_date,
+        gv.is_latest,
+        gv.requires_ack,
+
+        CASE
+          WHEN gv.file_path IS NOT NULL
+            AND TRIM(gv.file_path) <> ''
+          THEN 1
+          ELSE 0
+        END AS has_file,
+
+        CASE
+          WHEN ga.status = 'read' THEN 1
+          ELSE 0
+        END AS acknowledged,
+
+        ga.acknowledged_at
+
+      FROM guide g
+
+      JOIN guide_version gv
+        ON gv.guide_id = g.guide_id
+
+      JOIN project p
+        ON p.project_id = g.project_id
+
+      LEFT JOIN guide_acknowledgement ga
+        ON ga.version_id = gv.version_id
+       AND ga.user_id = ?
 
       WHERE g.project_id = ?
 
-      ORDER BY g.created_at DESC
+      ORDER BY
+        gv.uploaded_at DESC,
+        gv.version_id DESC
       `,
-      [projectId]
+      [userId, projectId]
     );
 
     return res.status(200).json({
@@ -343,101 +263,146 @@ const getGuideHistory = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to load guide history",
-      error: error.message,
     });
   }
 };
 
-// Downloads a guide file if the logged-in user has access
-const downloadGuide = async (req, res) => {
+// Download a guide version for an assigned project.
+const downloadGuide = async (req, res, next) => {
+  const path = require("path");
+  const fs = require("fs/promises");
+
   try {
     const userId = req.user.id;
-    const role = req.user.role;
-    const guideId = req.params.id;
+    const versionId = Number(req.params.id);
 
-    let guides = [];
-
-    if (role === "indexer") {
-      [guides] = await db.query(
-        `
-        SELECT
-          g.id,
-          g.file_url
-        FROM guides g
-
-        JOIN user_project_assignments upa
-          ON upa.project_id = g.project_id
-
-        WHERE g.id = ?
-          AND upa.user_id = ?
-
-        LIMIT 1
-        `,
-        [guideId, userId]
-      );
-    }
-
-    else if (role === "teamLead") {
-      [guides] = await db.query(
-        `
-        SELECT
-          g.id,
-          g.file_url
-
-        FROM guides g
-
-        JOIN user_project_assignments upa
-          ON upa.project_id = g.project_id
-
-        JOIN team_members tm
-          ON tm.member_id = upa.user_id
-
-        WHERE g.id = ?
-          AND tm.team_lead_id = ?
-
-        LIMIT 1
-        `,
-        [guideId, userId]
-      );
-    }
-
-    if (guides.length === 0) {
+    if (!["indexer", "teamLead"].includes(req.user.role)) {
       return res.status(403).json({
         success: false,
-        message: "You are not allowed to download this guide",
+        message: "You are not allowed to download guides",
       });
     }
 
-    if (!guides[0].file_url) {
+    if (!Number.isSafeInteger(versionId) || versionId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid guide version ID is required",
+      });
+    }
+
+    const [guides] = await db.query(
+      `
+      SELECT
+        gv.version_id,
+        gv.file_path
+      FROM guide_version gv
+
+      JOIN guide g
+        ON g.guide_id = gv.guide_id
+
+      JOIN project_assignment pa
+        ON pa.project_id = g.project_id
+
+      WHERE gv.version_id = ?
+        AND pa.user_id = ?
+
+      LIMIT 1
+      `,
+      [versionId, userId]
+    );
+
+    if (guides.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Guide file is not available",
+        message: "Assigned guide version not found",
       });
     }
 
-    // Builds the absolute guide file path
-const filePath = path.resolve(
-  process.cwd(),
-  guides[0].file_url
-);
+    const storedPath = guides[0].file_path;
 
-console.log("Downloading guide from:", filePath);
+    if (!storedPath) {
+      return res.status(404).json({
+        success: false,
+        message: "Guide file path is not configured",
+      });
+    }
 
-// Downloads the guide PDF
-return res.download(filePath);
+    // This controller must be in backend/controllers/.
+    const backendRoot = path.resolve(__dirname, "..");
+    const guidesFolder = path.join(backendRoot, "uploads", "guides");
+    const filePath = path.resolve(backendRoot, storedPath);
 
+    // Only allow files inside uploads/guides.
+      const isInside = (folder, file) => {
+        const relative = path.relative(folder, file);
 
-    return res.download(filePath);
-  } catch (error) {
-    console.error("Guide Download Error:", error);
+        return (
+          relative !== "" &&
+          relative !== ".." &&
+          !relative.startsWith(`..${path.sep}`) &&
+          !path.isAbsolute(relative)
+        );
+      };
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to download guide",
-      error: error.message,
-    });
-  }
-};
+      if (!isInside(guidesFolder, filePath)) {
+        return res.status(403).json({
+          success: false,
+          message: "Invalid guide file location",
+        });
+      }
+
+      // Also check the actual locations in case symbolic links are used.
+      const realFolder = await fs.realpath(guidesFolder);
+      const realFile = await fs.realpath(filePath);
+
+      if (!isInside(realFolder, realFile)) {
+        return res.status(403).json({
+          success: false,
+          message: "Invalid guide file location",
+        });
+      }
+
+      const fileInfo = await fs.stat(realFile);
+
+      if (!fileInfo.isFile()) {
+        return res.status(404).json({
+          success: false,
+          message: "Guide file is not available",
+        });
+      }
+
+      return res.download(
+        realFile,
+        path.basename(realFile),
+        (error) => {
+          if (!error) return;
+
+          console.error("Guide Download Error:", error);
+
+          if (res.headersSent) {
+            return next(error);
+          }
+
+          return res.status(error.statusCode === 404 ? 404 : 500).json({
+            success: false,
+            message: "Could not send the guide file",
+          });
+        }
+      );
+    } catch (error) {
+      console.error("Download Guide Error:", error);
+
+      const missingFile = ["ENOENT", "ENOTDIR"].includes(error.code);
+
+      return res.status(missingFile ? 404 : 500).json({
+        success: false,
+        message: missingFile
+          ? "Guide PDF was not found in uploads/guides"
+          : "Failed to download guide",
+      });
+    }
+  };
+
 // ======================================================
 // EXPORTS
 // ======================================================
