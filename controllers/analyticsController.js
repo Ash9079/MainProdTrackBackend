@@ -531,80 +531,127 @@ const getTopPerformers = async (req, res) => {
 // 5. COMPLETED VS TARGET
 // ============================================================
 
-// Gets completed-production trend data while target configuration is unavailable.
+// Returns monthly completed production compared with configured production targets.
 const getCompletedVsTarget = async (req, res) => {
   try {
-    /*
-      The current DPTA database does not contain a
-      production_target or production_targets table.
+    // Reads the optional YYYY-MM month selected by the frontend.
+    const month = req.query.month;
 
-      Therefore the API returns real completed production,
-      while target remains unavailable until target
-      configuration is added to the database.
-    */
+    // Validates the optional month before using it in the SQL query.
+    const hasValidMonth =
+      month && /^\d{4}-\d{2}$/.test(month);
 
-    // Loads completed production from the last 30 days.
-    const [trend] = await db.query(`
+    // Adds a month condition only when a valid month was supplied.
+    const monthCondition = hasValidMonth
+      ? "WHERE months.month_key = ?"
+      : "";
+
+    // Supplies the selected month to the SQL placeholder when needed.
+    const queryParams = hasValidMonth ? [month] : [];
+
+    // Builds monthly production and target totals separately to avoid duplicate sums.
+    const completedVsTargetQuery = `
       SELECT
-        production_date,
+        months.month_key,
+        DATE_FORMAT(
+          STR_TO_DATE(CONCAT(months.month_key, '-01'), '%Y-%m-%d'),
+          '%b %Y'
+        ) AS month_name,
+        COALESCE(production.completed, 0) AS completed,
+        COALESCE(targets.target, 0) AS target
+      FROM (
+        SELECT DISTINCT
+          DATE_FORMAT(production_date, '%Y-%m') AS month_key
+        FROM daily_entry
 
-        COALESCE(
-          SUM(docs_completed),
-          0
-        ) AS completed
+        UNION
 
-      FROM daily_entry
+        SELECT DISTINCT
+          DATE_FORMAT(target_month, '%Y-%m') AS month_key
+        FROM production_target
+      ) months
 
-      WHERE production_date >=
-        DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      LEFT JOIN (
+        SELECT
+          DATE_FORMAT(production_date, '%Y-%m') AS month_key,
+          SUM(docs_completed) AS completed
+        FROM daily_entry
+        GROUP BY DATE_FORMAT(production_date, '%Y-%m')
+      ) production
+        ON production.month_key = months.month_key
 
-      GROUP BY production_date
+      LEFT JOIN (
+        SELECT
+          DATE_FORMAT(target_month, '%Y-%m') AS month_key,
+          SUM(target_docs) AS target
+        FROM production_target
+        GROUP BY DATE_FORMAT(target_month, '%Y-%m')
+      ) targets
+        ON targets.month_key = months.month_key
 
-      ORDER BY production_date ASC
+      ${monthCondition}
+
+      ORDER BY months.month_key ASC
+    `;
+
+    // Executes the completed-versus-target query.
+    const [rows] = await db.query(
+      completedVsTargetQuery,
+      queryParams,
+    );
+
+    // Checks whether at least one production target exists in the database.
+    const [[targetStatus]] = await db.query(`
+      SELECT COUNT(*) AS target_count
+      FROM production_target
     `);
 
-    // Formats the production trend while leaving target at zero.
-    const formattedTrend = trend.map(
-      (item) => ({
-        production_date: item.production_date,
+    // Converts database values into frontend-safe numeric values.
+    const trend = rows.map((row) => {
+      // Converts the monthly completed-production value into a number.
+      const completed = Number(row.completed || 0);
 
-        completed: Number(
-          item.completed || 0
-        ),
+      // Converts the configured monthly target into a number.
+      const target = Number(row.target || 0);
 
-        // No production target source currently exists in the database schema.
-        target: 0,
-      })
-    );
+      // Calculates the percentage of the configured target achieved.
+      const achievementRate =
+        target > 0
+          ? Math.round((completed / target) * 100)
+          : 0;
 
-    // Returns the trend and tells the frontend that target configuration is unavailable.
+      // Returns the monthly Analytics structure used by the frontend chart.
+      return {
+        month_key: row.month_key,
+        month_name: row.month_name,
+        completed,
+        target,
+        achievementRate,
+      };
+    });
+
+    // Returns the completed-versus-target Analytics response.
     return res.status(200).json({
       success: true,
-      targetConfigured: false,
-
-      message:
-        "Production target is not configured in the current database schema",
-
-      count: formattedTrend.length,
-      trend: formattedTrend,
+      targetConfigured: Number(targetStatus.target_count) > 0,
+      count: trend.length,
+      trend,
     });
   } catch (error) {
-    // Logs Completed vs Target errors in the backend terminal.
+    // Logs unexpected Completed vs Target errors on the backend.
     console.error(
-      "Completed Vs Target Error:",
-      error
+      "Completed Vs Target Analytics Error:",
+      error,
     );
 
-    // Returns the Completed vs Target error response.
+    // Returns a safe error response to the frontend.
     return res.status(500).json({
       success: false,
       message:
-        "Failed to load completed vs target",
-      error: error.message,
+        "Failed to load completed versus target analytics",
     });
   }
 };
-
 
 // ============================================================
 // 6. STATUS DISTRIBUTION
