@@ -107,6 +107,22 @@ const getCoreTeamDashboard = async (req, res) => {
 // Gets received and completed production for the last 6 months.
 const getMonthlyProductionTrend = async (req, res) => {
   try {
+    // Confirms that this exact monthly-trend controller is being executed.
+console.log("NEW MONTHLY TREND CONTROLLER RUNNING");
+
+// Confirms which MySQL database the backend connection is actually using.
+const [dbInfo] = await db.query("SELECT DATABASE() AS database_name");
+
+// Prints the backend's active database name in the terminal.
+console.log("BACKEND DATABASE:", dbInfo[0].database_name);
+
+// Checks how many daily-entry rows the backend can currently see.
+const [entryCount] = await db.query(
+  "SELECT COUNT(*) AS total FROM daily_entry"
+);
+
+// Prints the number of daily-entry rows visible to the backend.
+console.log("DAILY ENTRY COUNT:", entryCount[0].total);
 
     const [trend] = await db.query(`
       SELECT
@@ -131,12 +147,8 @@ const getMonthlyProductionTrend = async (req, res) => {
         ) AS completed
 
       FROM daily_entry
-
-      WHERE production_date >=
-        DATE_SUB(
-          DATE_FORMAT(CURDATE(), '%Y-%m-01'),
-          INTERVAL 5 MONTH
-        )
+      
+      WHERE production_date IS NOT NULL
 
       GROUP BY
         DATE_FORMAT(
@@ -152,6 +164,9 @@ const getMonthlyProductionTrend = async (req, res) => {
       ORDER BY
         month_key ASC
     `);
+    // Shows exactly what MySQL returned for the monthly trend query.
+        console.log("MONTHLY TREND DB RESULT:", trend);
+
 
 
     // Convert MySQL values to JavaScript numbers.
