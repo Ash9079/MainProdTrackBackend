@@ -5,109 +5,103 @@ const getMyTeam = async (req, res) => {
   try {
     const teamLeadId = req.user.id;
 
-    const [members] = await db.query(
-      `
-      SELECT
-        u.id,
-        u.employee_id,
-        u.name,
-        u.email,
+const [members] = await db.query(
+  `
+  SELECT
+    u.user_id AS id,
+    u.user_id,
+    u.emp_code AS employee_id,
+    u.emp_code AS employee_code,
+    u.full_name AS name,
+    u.full_name,
+    u.email,
 
-        GROUP_CONCAT(
+    COALESCE(
+      (
+        SELECT GROUP_CONCAT(
           DISTINCT p.project_name
           ORDER BY p.project_name
           SEPARATOR ', '
-        ) AS projects,
+        )
+        FROM project_assignment pa
+        JOIN project p
+          ON p.project_id = pa.project_id
+        WHERE pa.user_id = u.user_id
+      ),
+      ''
+    ) AS projects,
 
-        COALESCE(
-          SUM(
-            CASE
-              WHEN de.production_date = CURDATE()
-              THEN de.documents_completed
-              ELSE 0
-            END
-          ),
-          0
-        ) AS today_completed,
+    COALESCE(
+      (
+        SELECT SUM(de.docs_completed)
+        FROM daily_entry de
+        WHERE de.user_id = u.user_id
+          AND de.production_date = CURDATE()
+      ),
+      0
+    ) AS today_completed,
 
-        CASE
-          WHEN COUNT(
-            DISTINCT CASE
-              WHEN g.status = 'active'
-              AND ga.id IS NULL
-              THEN g.id
-            END
-          ) > 0
-          THEN 'PENDING'
-          ELSE 'DONE'
-        END AS guide_acknowledgement,
-
-        CASE
-  -- Shows LEAVE when today is inside an approved leave period.
-  WHEN EXISTS (
-    SELECT 1
-    FROM leave_requests lr
-    WHERE lr.user_id = u.id
-      AND lr.status = 'APPROVED'
-      AND CURDATE() BETWEEN lr.start_date AND lr.end_date
-  )
-  THEN 'LEAVE'
-
-  -- Shows today's attendance status when attendance is marked.
-  WHEN MAX(
     CASE
-      WHEN a.attendance_date = CURDATE()
-      THEN a.status
-    END
-  ) IS NOT NULL
-  THEN MAX(
+      WHEN EXISTS (
+        SELECT 1
+        FROM project_assignment pa
+
+        JOIN guide g
+          ON g.project_id = pa.project_id
+
+        JOIN guide_version gv
+          ON gv.guide_id = g.guide_id
+         AND gv.is_latest = 1
+         AND gv.requires_ack = 1
+
+        LEFT JOIN guide_acknowledgement ga
+          ON ga.version_id = gv.version_id
+         AND ga.user_id = u.user_id
+         AND ga.status = 'read'
+
+        WHERE pa.user_id = u.user_id
+          AND ga.ack_id IS NULL
+      )
+      THEN 'PENDING'
+      ELSE 'DONE'
+    END AS guide_acknowledgement,
+
     CASE
-      WHEN a.attendance_date = CURDATE()
-      THEN a.status
-    END
-  )
+      WHEN EXISTS (
+        SELECT 1
+        FROM leave_request lr
+        WHERE lr.user_id = u.user_id
+          AND lr.status = 'APPROVED'
+          AND CURDATE() BETWEEN lr.start_date AND lr.end_date
+      )
+      THEN 'LEAVE'
 
-  -- Shows NOT MARKED when there is no leave and no attendance.
-  ELSE 'NOT MARKED'
-END AS attendance_status
+      ELSE COALESCE(
+        (
+          SELECT ats.name
+          FROM attendance a
 
-      FROM team_members tm
+          JOIN attendance_status ats
+            ON ats.status_id = a.status_id
 
-      JOIN users u
-        ON u.id = tm.member_id
+          WHERE a.user_id = u.user_id
+            AND a.att_date = CURDATE()
 
-      LEFT JOIN user_project_assignments upa
-        ON upa.user_id = u.id
+          LIMIT 1
+        ),
+        'NOT MARKED'
+      )
+    END AS attendance_status
 
-      LEFT JOIN projects p
-        ON p.id = upa.project_id
+  FROM users u
 
-      LEFT JOIN daily_entries de
-        ON de.user_id = u.id
+  WHERE u.team_lead_id = ?
+    AND u.status = 'active'
 
-      LEFT JOIN guides g
-        ON g.project_id = upa.project_id
-        AND g.status = 'active'
-
-      LEFT JOIN guide_acknowledgements ga
-        ON ga.guide_id = g.id
-        AND ga.user_id = u.id
-
-      LEFT JOIN attendance a
-        ON a.user_id = u.id
-
-      WHERE tm.team_lead_id = ?
-
-      GROUP BY
-        u.id,
-        u.employee_id,
-        u.name,
-        u.email
-
-      ORDER BY u.name ASC
-      `,
-      [teamLeadId]
-    );
+  ORDER BY u.full_name ASC
+  `,
+  [teamLeadId]
+);
 
     return res.status(200).json({
       success: true,

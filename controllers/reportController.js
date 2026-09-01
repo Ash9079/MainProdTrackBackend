@@ -25,9 +25,9 @@ const getMyReportSummary = async (req, res) => {
       [rows] = await db.query(
         `
         SELECT
-          COALESCE(SUM(documents_received), 0) AS totalReceived,
-          COALESCE(SUM(documents_completed), 0) AS totalCompleted
-        FROM daily_entries
+          COALESCE(SUM(docs_received), 0) AS totalReceived,
+          COALESCE(SUM(docs_completed), 0) AS totalCompleted
+        FROM daily_entry
         WHERE user_id = ?
         `,
         [userId]
@@ -38,21 +38,22 @@ const getMyReportSummary = async (req, res) => {
     // TEAM LEAD REPORT
     // =========================
     else if (role === "teamLead") {
-      [rows] = await db.query(
-        `
-        SELECT
-          COALESCE(SUM(de.documents_received), 0) AS totalReceived,
-          COALESCE(SUM(de.documents_completed), 0) AS totalCompleted
+        [rows] = await db.query(
+          `
+          SELECT
+            COALESCE(SUM(de.docs_received), 0) AS totalReceived,
+            COALESCE(SUM(de.docs_completed), 0) AS totalCompleted
 
-        FROM team_members tm
+          FROM users u
 
-        LEFT JOIN daily_entries de
-          ON de.user_id = tm.member_id
+          LEFT JOIN daily_entry de
+            ON de.user_id = u.user_id
 
-        WHERE tm.team_lead_id = ?
-        `,
-        [userId]
-      );
+          WHERE u.team_lead_id = ?
+            AND u.status = 'active'
+          `,
+          [userId]
+        );
     }
 
     // =========================
@@ -124,72 +125,78 @@ const getMyDailyProduction = async (req, res) => {
     // INDEXER
     // =========================
     if (role === "indexer") {
-      [production] = await db.query(
-        `
-        SELECT
-          DATE(production_date) AS production_date,
-          DAYNAME(production_date) AS day_name,
+        [production] = await db.query(
+          `
+          SELECT
+            DATE_FORMAT(
+              de.production_date,
+              '%Y-%m-%d'
+            ) AS production_date,
 
-          COALESCE(
-            SUM(documents_received),
-            0
-          ) AS received,
+            DAYNAME(de.production_date) AS day_name,
 
-          COALESCE(
-            SUM(documents_completed),
-            0
-          ) AS completed
+            COALESCE(
+              SUM(de.docs_received),
+              0
+            ) AS received,
 
-        FROM daily_entries
+            COALESCE(
+              SUM(de.docs_completed),
+              0
+            ) AS completed
 
-        WHERE user_id = ?
+          FROM users u
 
-        GROUP BY
-          DATE(production_date),
-          DAYNAME(production_date)
+          JOIN daily_entry de
+            ON de.user_id = u.user_id
 
-        ORDER BY DATE(production_date) ASC
-        `,
-        [userId]
-      );
+          WHERE u.team_lead_id = ?
+            AND u.status = 'active'
+
+          GROUP BY
+            de.production_date,
+            DAYNAME(de.production_date)
+
+          ORDER BY de.production_date ASC
+          `,
+          [userId]
+        );
     }
 
     // =========================
     // TEAM LEAD
     // =========================
-    else if (role === "teamLead") {
-      [production] = await db.query(
-        `
-        SELECT
-          DATE(de.production_date) AS production_date,
-          DAYNAME(de.production_date) AS day_name,
+      else if (role === "teamLead") {
+        [production] = await db.query(
+          `
+          SELECT
+            DATE_FORMAT(
+              de.production_date,
+              '%Y-%m-%d'
+            ) AS production_date,
 
-          COALESCE(
-            SUM(de.documents_received),
-            0
-          ) AS received,
+            DAYNAME(de.production_date) AS day_name,
 
-          COALESCE(
-            SUM(de.documents_completed),
-            0
-          ) AS completed
+            COALESCE(SUM(de.docs_received), 0) AS received,
+            COALESCE(SUM(de.docs_completed), 0) AS completed
 
-        FROM team_members tm
+          FROM users u
 
-        JOIN daily_entries de
-          ON de.user_id = tm.member_id
+          JOIN daily_entry de
+            ON de.user_id = u.user_id
 
-        WHERE tm.team_lead_id = ?
+          WHERE u.team_lead_id = ?
+            AND u.status = 'active'
 
-        GROUP BY
-          DATE(de.production_date),
-          DAYNAME(de.production_date)
+          GROUP BY
+            de.production_date,
+            DAYNAME(de.production_date)
 
-        ORDER BY DATE(de.production_date) ASC
-        `,
-        [userId]
-      );
-    }
+          ORDER BY de.production_date ASC
+          `,
+          [userId]
+        );
+      }
 
     // =========================
     // UNSUPPORTED ROLE
@@ -219,11 +226,111 @@ const getMyDailyProduction = async (req, res) => {
 };
 
 
-// ======================================================
-// EXPORTS
-// ======================================================
+const getEmployeeProduction = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const role = req.user.role;
+
+    let userCondition;
+    let queryValues;
+
+    if (role === "indexer") {
+      userCondition = "u.user_id = ?";
+      queryValues = [userId];
+    } else if (role === "teamLead") {
+      userCondition =
+        "u.team_lead_id = ? AND u.status = 'active'";
+      queryValues = [userId];
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to access this report",
+      });
+    }
+
+    const [employees] = await db.query(
+      `
+      SELECT
+        u.user_id AS id,
+        u.emp_code,
+        u.full_name AS employee_name,
+
+        COALESCE(projects.project_names, '—') AS projects,
+
+        COALESCE(production.received, 0) AS received,
+        COALESCE(production.completed, 0) AS completed,
+
+        GREATEST(
+          COALESCE(production.received, 0) -
+          COALESCE(production.completed, 0),
+          0
+        ) AS pending,
+
+        CASE
+          WHEN COALESCE(production.received, 0) > 0
+          THEN ROUND(
+            (
+              COALESCE(production.completed, 0) /
+              production.received
+            ) * 100
+          )
+          ELSE 0
+        END AS productivity
+
+      FROM users u
+
+      LEFT JOIN (
+        SELECT
+          pa.user_id,
+          GROUP_CONCAT(
+            DISTINCT p.project_name
+            ORDER BY p.project_name
+            SEPARATOR ', '
+          ) AS project_names
+        FROM project_assignment pa
+        JOIN project p
+          ON p.project_id = pa.project_id
+        GROUP BY pa.user_id
+      ) projects
+        ON projects.user_id = u.user_id
+
+      LEFT JOIN (
+        SELECT
+          de.user_id,
+          SUM(de.docs_received) AS received,
+          SUM(de.docs_completed) AS completed
+        FROM daily_entry de
+        WHERE de.production_date >=
+          DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
+        GROUP BY de.user_id
+      ) production
+        ON production.user_id = u.user_id
+
+      WHERE ${userCondition}
+
+      ORDER BY u.full_name ASC
+      `,
+      queryValues
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: employees.length,
+      employees,
+    });
+  } catch (error) {
+    console.error("Employee Production Report Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load employee production report",
+      error: error.message,
+    });
+  }
+};
 
 module.exports = {
   getMyReportSummary,
   getMyDailyProduction,
+  getEmployeeProduction,
 };
