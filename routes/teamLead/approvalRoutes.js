@@ -5,6 +5,7 @@ const allowRoles = require("../../middleware/roleMiddleware");
 
 const {
   getPendingApprovals,
+  getApprovalSummary,
   approveCorrectionRequest,
   rejectCorrectionRequest,
 
@@ -33,6 +34,13 @@ router.patch(
   authenticate,
   allowRoles("teamLead"),
   rejectCorrectionRequest
+);
+
+router.get(
+  "/approvals/summary",
+  authenticate,
+  allowRoles("teamLead"),
+  getApprovalSummary
 );
 
 module.exports = router;
