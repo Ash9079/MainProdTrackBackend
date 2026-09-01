@@ -1,59 +1,66 @@
 const db = require("../config/db");
 
-// ======================================================
-// REPORT SUMMARY
-//
-// Indexer:
-//   Returns the logged-in Indexer's production.
-//
-// Team Lead:
-//   Returns production of all members belonging to
-//   the logged-in Team Lead.
-// ======================================================
-
 const getMyReportSummary = async (req, res) => {
   try {
     const userId = req.user.id;
     const role = req.user.role;
+    const period =
+      req.query.period === "month"
+        ? "month"
+        : "week";
+
+    const dateCondition =
+      getProductionDateCondition(period);
 
     let rows;
 
     // =========================
     // INDEXER REPORT
     // =========================
-    if (role === "indexer") {
-      [rows] = await db.query(
-        `
-        SELECT
-          COALESCE(SUM(docs_received), 0) AS totalReceived,
-          COALESCE(SUM(docs_completed), 0) AS totalCompleted
-        FROM daily_entry
-        WHERE user_id = ?
-        `,
-        [userId]
-      );
-    }
+      if (role === "indexer") {
+        [rows] = await db.query(
+          `
+          SELECT
+            COALESCE(
+              SUM(de.docs_received),
+              0
+            ) AS totalReceived,
+
+            COALESCE(
+              SUM(de.docs_completed),
+              0
+            ) AS totalCompleted
+
+          FROM daily_entry de
+
+          WHERE de.user_id = ?
+            AND ${dateCondition}
+          `,
+          [userId]
+        );
+      }
 
     // =========================
     // TEAM LEAD REPORT
     // =========================
     else if (role === "teamLead") {
-        [rows] = await db.query(
-          `
-          SELECT
-            COALESCE(SUM(de.docs_received), 0) AS totalReceived,
-            COALESCE(SUM(de.docs_completed), 0) AS totalCompleted
+      [rows] = await db.query(
+        `
+        SELECT
+          COALESCE(SUM(de.docs_received), 0) AS totalReceived,
+          COALESCE(SUM(de.docs_completed), 0) AS totalCompleted
 
-          FROM users u
+        FROM users u
 
-          LEFT JOIN daily_entry de
-            ON de.user_id = u.user_id
+        LEFT JOIN daily_entry de
+        ON de.user_id = u.user_id
+        AND ${dateCondition}
 
-          WHERE u.team_lead_id = ?
-            AND u.status = 'active'
-          `,
-          [userId]
-        );
+        WHERE u.team_lead_id = ?
+        AND u.status = 'active'
+        `,
+        [userId]
+      );
     }
 
     // =========================
@@ -118,6 +125,15 @@ const getMyDailyProduction = async (req, res) => {
   try {
     const userId = req.user.id;
     const role = req.user.role;
+
+
+    const period =
+      req.query.period === "month"
+        ? "month"
+        : "week";
+
+    const dateCondition =
+      getProductionDateCondition(period);
 
     let production;
 
@@ -231,6 +247,14 @@ const getEmployeeProduction = async (req, res) => {
     const userId = req.user.id;
     const role = req.user.role;
 
+    const period =
+      req.query.period === "month"
+        ? "month"
+        : "week";
+
+    const dateCondition =
+      getProductionDateCondition(period);
+
     let userCondition;
     let queryValues;
 
@@ -299,10 +323,9 @@ const getEmployeeProduction = async (req, res) => {
           de.user_id,
           SUM(de.docs_received) AS received,
           SUM(de.docs_completed) AS completed
-        FROM daily_entry de
-        WHERE de.production_date >=
-          DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)
-        GROUP BY de.user_id
+      FROM daily_entry de
+      WHERE ${dateCondition}
+      GROUP BY de.user_id
       ) production
         ON production.user_id = u.user_id
 
@@ -327,6 +350,36 @@ const getEmployeeProduction = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+const getProductionDateCondition = (
+  period,
+  alias = "de"
+) => {
+  if (period === "month") {
+    return `
+      ${alias}.production_date >=
+        DATE_FORMAT(CURDATE(), '%Y-%m-01')
+      AND ${alias}.production_date <
+        DATE_ADD(LAST_DAY(CURDATE()), INTERVAL 1 DAY)
+    `;
+  }
+
+  return `
+    ${alias}.production_date >=
+      DATE_SUB(
+        CURDATE(),
+        INTERVAL WEEKDAY(CURDATE()) DAY
+      )
+    AND ${alias}.production_date <
+      DATE_ADD(
+        DATE_SUB(
+          CURDATE(),
+          INTERVAL WEEKDAY(CURDATE()) DAY
+        ),
+        INTERVAL 7 DAY
+      )
+  `;
 };
 
 module.exports = {

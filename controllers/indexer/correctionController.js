@@ -6,82 +6,159 @@ const createCorrectionRequest = async (req, res) => {
     const userId = req.user.id;
 
     const {
-      projectId,
       dailyEntryId,
-      productionDate,
+      entryId,
       fieldName,
       oldValue,
       newValue,
       reason,
     } = req.body;
 
-    // Checks required fields
-    if (!projectId || !productionDate || !fieldName || !newValue) {
+    const selectedEntryId = Number(
+      dailyEntryId || entryId
+    );
+
+    if (
+      !Number.isSafeInteger(selectedEntryId) ||
+      selectedEntryId <= 0 ||
+      !fieldName ||
+      newValue === undefined ||
+      newValue === null ||
+      String(newValue).trim() === "" ||
+      !reason
+    ) {
       return res.status(400).json({
         success: false,
         message:
-          "Project, production date, field name and new value are required",
+          "Entry, field name, new value and reason are required",
       });
     }
 
-    // Checks whether the project is assigned to this Indexer
-    const [assignment] = await db.query(
+    // Only the owner can request changes to a locked entry.
+    const [entries] = await db.query(
       `
-      SELECT id
-      FROM user_project_assignments
-      WHERE user_id = ? AND project_id = ?
+      SELECT
+        de.entry_id,
+        de.project_id,
+        de.production_date
+      FROM daily_entry de
+
+      JOIN entry_status es
+        ON es.status_id = de.status_id
+
+      WHERE de.entry_id = ?
+        AND de.user_id = ?
+        AND es.code = 'locked'
+
       LIMIT 1
       `,
-      [userId, projectId]
+      [selectedEntryId, userId]
     );
 
-    if (assignment.length === 0) {
-      return res.status(403).json({
+    if (entries.length === 0) {
+      return res.status(404).json({
         success: false,
-        message: "This project is not assigned to you",
+        message:
+          "Locked daily entry not found or does not belong to you",
       });
     }
 
-    // Saves the correction request with PENDING status
+    const selectedEntry = entries[0];
+
+    // Prevent duplicate pending requests for the same field.
+    const [existing] = await db.query(
+      `
+      SELECT cr.request_id
+      FROM correction_request cr
+
+      JOIN correction_status cs
+        ON cs.status_id = cr.status_id
+
+      WHERE cr.entry_id = ?
+        AND cr.field_name = ?
+        AND cr.requested_by = ?
+        AND cs.code = 'pending'
+
+      LIMIT 1
+      `,
+      [
+        selectedEntryId,
+        fieldName,
+        userId,
+      ]
+    );
+
+    if (existing.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "A pending correction request already exists for this field",
+      });
+    }
+
+    const [statuses] = await db.query(
+      `
+      SELECT status_id
+      FROM correction_status
+      WHERE code = 'pending'
+      LIMIT 1
+      `
+    );
+
+    if (statuses.length === 0) {
+      return res.status(500).json({
+        success: false,
+        message:
+          "Pending correction status is not configured",
+      });
+    }
+
     const [result] = await db.query(
       `
-      INSERT INTO correction_requests
+      INSERT INTO correction_request
       (
-        user_id,
+        entry_id,
         project_id,
-        daily_entry_id,
         production_date,
         field_name,
         old_value,
         new_value,
         reason,
-        status
+        requested_by,
+        requested_at,
+        status_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)
       `,
       [
-        userId,
-        projectId,
-        dailyEntryId || null,
-        productionDate,
+        selectedEntryId,
+        selectedEntry.project_id,
+        selectedEntry.production_date,
         fieldName,
-        oldValue || null,
-        newValue,
-        reason || null,
+        oldValue ?? null,
+        String(newValue).trim(),
+        String(reason).trim(),
+        userId,
+        statuses[0].status_id,
       ]
     );
 
     return res.status(201).json({
       success: true,
-      message: "Correction request submitted successfully",
+      message:
+        "Correction request submitted successfully",
       correctionRequestId: result.insertId,
     });
   } catch (error) {
-    console.error("Create Correction Request Error:", error);
+    console.error(
+      "Create Correction Request Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Failed to create correction request",
+      message:
+        "Failed to create correction request",
       error: error.message,
     });
   }
@@ -95,26 +172,43 @@ const getMyCorrectionRequests = async (req, res) => {
     const [requests] = await db.query(
       `
       SELECT
-        cr.id,
-        cr.production_date,
+        cr.request_id AS id,
+        cr.request_id,
+        cr.entry_id,
+
+        DATE_FORMAT(
+          cr.production_date,
+          '%Y-%m-%d'
+        ) AS production_date,
+
         cr.field_name,
         cr.old_value,
         cr.new_value,
         cr.reason,
-        cr.status,
-        cr.review_comment,
-        cr.created_at,
-        p.id AS project_id,
+
+        cs.code AS status,
+        cs.name AS status_name,
+
+        cr.approver_comments AS review_comment,
+        cr.requested_at AS created_at,
+        cr.approved_at AS reviewed_at,
+
+        p.project_id,
         p.project_name
 
-      FROM correction_requests cr
+      FROM correction_request cr
 
-      JOIN projects p
-        ON p.id = cr.project_id
+      JOIN correction_status cs
+        ON cs.status_id = cr.status_id
 
-      WHERE cr.user_id = ?
+      JOIN project p
+        ON p.project_id = cr.project_id
 
-      ORDER BY cr.created_at DESC
+      WHERE cr.requested_by = ?
+
+      ORDER BY
+        cr.requested_at DESC,
+        cr.request_id DESC
       `,
       [userId]
     );
@@ -125,11 +219,15 @@ const getMyCorrectionRequests = async (req, res) => {
       requests,
     });
   } catch (error) {
-    console.error("Get Correction Requests Error:", error);
+    console.error(
+      "Get Correction Requests Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Failed to load correction requests",
+      message:
+        "Failed to load correction requests",
       error: error.message,
     });
   }
