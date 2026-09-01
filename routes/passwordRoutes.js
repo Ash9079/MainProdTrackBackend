@@ -1,7 +1,7 @@
 const express = require("express");
 
 const authenticate = require("../middleware/authMiddleware");
-const allowRoles = require("../middleware/roleMiddleware");
+
 
 const {
   changePassword,
@@ -13,7 +13,6 @@ const router = express.Router();
 router.patch(
   "/change-password",
   authenticate,
-  allowRoles("indexer", "teamLead"),
   changePassword
 );
 

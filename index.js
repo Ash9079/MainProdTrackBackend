@@ -52,6 +52,7 @@ const indexerCorrectionRoutes = require(
 );
 
 
+
 // ============================================
 // MIDDLEWARE
 // ============================================
@@ -129,7 +130,7 @@ app.use("/api/team-lead", teamLeadApprovalRoutes);
 // Handles leave request APIs
 app.use("/api/leave-requests", leaveRoutes);
 // Handles resetpassword APIs
-app.use("/api/profile", passwordRoutes);
+app.use("/api/password", passwordRoutes);
 // Registers all Team Lead leave approval APIs under /api/team-lead.
 app.use("/api/team-lead", teamLeadLeaveRoutes);
 // Registers Core Team dashboard APIs under /api/core-team.

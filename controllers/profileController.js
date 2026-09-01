@@ -9,15 +9,53 @@ const getMyProfile = async (req, res) => {
     const [users] = await db.query(
       `
       SELECT
-        id,
-        employee_id,
-        name,
-        email,
-        role,
-        department,
-        status
-      FROM users
-      WHERE id = ?
+        u.user_id AS id,
+        u.user_id,
+
+        u.emp_code AS emp,
+        u.emp_code AS employeeId,
+
+        u.full_name AS name,
+        u.full_name,
+
+        u.username,
+        u.email,
+
+        d.name AS department,
+        d.name AS dept,
+
+        u.designation,
+
+        r.name AS role,
+        r.code AS role_code,
+
+        CASE r.code
+          WHEN 'indexer' THEN 'indexer'
+          WHEN 'lead' THEN 'teamLead'
+          WHEN 'core' THEN 'coreTeam'
+          WHEN 'admin' THEN 'administrator'
+          ELSE r.code
+        END AS roleKey,
+
+        team_lead_user.full_name AS team_lead,
+
+        u.status,
+        u.last_login_at,
+        u.created_at
+
+      FROM users u
+
+      JOIN role r
+        ON r.role_id = u.role_id
+
+      LEFT JOIN department d
+        ON d.department_id = u.department_id
+
+      LEFT JOIN users team_lead_user
+      ON team_lead_user.user_id = u.team_lead_id
+
+      WHERE u.user_id = ?
+
       LIMIT 1
       `,
       [userId]
@@ -34,27 +72,35 @@ const getMyProfile = async (req, res) => {
 
     // Gets projects directly assigned to an Indexer
     if (role === "indexer") {
-      [projects] = await db.query(
-        `
-        SELECT
-          p.id,
-          p.project_code,
-          p.project_name,
-          p.client_name,
-          p.reporting_category,
-          p.status
+    [projects] = await db.query(
+  `
+      SELECT
+        p.project_id AS id,
+        p.project_id,
+        p.project_code,
+        p.project_name,
+        p.client_name,
 
-        FROM user_project_assignments upa
+        rc.name AS reporting_category,
 
-        JOIN projects p
-          ON p.id = upa.project_id
+        p.status,
+        p.start_date,
+        p.end_date
 
-        WHERE upa.user_id = ?
+      FROM project_assignment pa
 
-        ORDER BY p.project_name ASC
-        `,
-        [userId]
-      );
+      JOIN project p
+        ON p.project_id = pa.project_id
+
+      LEFT JOIN reporting_category rc
+        ON rc.category_id = p.category_id
+
+      WHERE pa.user_id = ?
+
+      ORDER BY p.project_name ASC
+      `,
+      [userId]
+    );
     }
 
     // Gets projects handled by members of the Team Lead's team
@@ -62,26 +108,36 @@ const getMyProfile = async (req, res) => {
       [projects] = await db.query(
         `
         SELECT DISTINCT
-          p.id,
+          p.project_id AS id,
+          p.project_id,
           p.project_code,
           p.project_name,
           p.client_name,
-          p.reporting_category,
-          p.status
 
-        FROM team_members tm
+          rc.name AS reporting_category,
 
-        JOIN user_project_assignments upa
-          ON upa.user_id = tm.member_id
+          p.status,
+          p.start_date,
+          p.end_date
 
-        JOIN projects p
-          ON p.id = upa.project_id
+        FROM project_assignment pa
 
-        WHERE tm.team_lead_id = ?
+        JOIN users member
+          ON member.user_id = pa.user_id
+
+        JOIN project p
+          ON p.project_id = pa.project_id
+
+        LEFT JOIN reporting_category rc
+          ON rc.category_id = p.category_id
+
+        WHERE
+          pa.user_id = ?
+          OR member.team_lead_id = ?
 
         ORDER BY p.project_name ASC
         `,
-        [userId]
+        [userId, userId]
       );
     }
 

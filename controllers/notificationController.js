@@ -8,26 +8,49 @@ const getMyNotifications = async (req, res) => {
     const [notifications] = await db.query(
       `
       SELECT
-        id,
-        type,
-        title,
-        message,
-        is_read,
-        created_at
-      FROM notifications
-      WHERE user_id = ?
-      ORDER BY created_at DESC
+        n.notification_id AS id,
+        n.notification_id,
+
+        nt.code AS type,
+        nt.name AS type_name,
+
+        n.title,
+        n.body AS message,
+        n.link_hash,
+
+        n.is_read,
+        n.created_at
+
+      FROM notification n
+
+      JOIN notification_type nt
+        ON nt.type_id = n.type_id
+
+      WHERE n.user_id = ?
+
+      ORDER BY
+        n.created_at DESC,
+        n.notification_id DESC
       `,
       [userId]
     );
 
+    const unreadCount = notifications.filter(
+      (notification) =>
+        Number(notification.is_read) === 0
+    ).length;
+
     return res.status(200).json({
       success: true,
       count: notifications.length,
+      unreadCount,
       notifications,
     });
   } catch (error) {
-    console.error("Get Notifications Error:", error);
+    console.error(
+      "Get Notifications Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -41,14 +64,24 @@ const getMyNotifications = async (req, res) => {
 const markAsRead = async (req, res) => {
   try {
     const userId = req.user.id;
-    const notificationId = req.params.id;
+    const notificationId = Number(req.params.id);
+
+    if (
+      !Number.isSafeInteger(notificationId) ||
+      notificationId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid notification ID is required",
+      });
+    }
 
     const [result] = await db.query(
       `
-      UPDATE notifications
+      UPDATE notification
       SET is_read = 1
-      WHERE id = ?
-      AND user_id = ?
+      WHERE notification_id = ?
+        AND user_id = ?
       `,
       [notificationId, userId]
     );
@@ -63,9 +96,13 @@ const markAsRead = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Notification marked as read",
+      notificationId,
     });
   } catch (error) {
-    console.error("Mark Notification Error:", error);
+    console.error(
+      "Mark Notification Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -80,11 +117,12 @@ const markAllAsRead = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    await db.query(
+    const [result] = await db.query(
       `
-      UPDATE notifications
+      UPDATE notification
       SET is_read = 1
       WHERE user_id = ?
+        AND is_read = 0
       `,
       [userId]
     );
@@ -92,9 +130,13 @@ const markAllAsRead = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "All notifications marked as read",
+      updatedCount: result.affectedRows,
     });
   } catch (error) {
-    console.error("Mark All Notifications Error:", error);
+    console.error(
+      "Mark All Notifications Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,

@@ -16,8 +16,14 @@ const changePassword = async (req, res) => {
       confirmPassword,
     } = req.body;
 
-    // Check required fields
-    if (!currentPassword || !newPassword || !confirmPassword) {
+    if (
+      typeof currentPassword !== "string" ||
+      typeof newPassword !== "string" ||
+      typeof confirmPassword !== "string" ||
+      !currentPassword ||
+      !newPassword ||
+      !confirmPassword
+    ) {
       return res.status(400).json({
         success: false,
         message:
@@ -25,30 +31,39 @@ const changePassword = async (req, res) => {
       });
     }
 
-    // New password and confirm password must match
     if (newPassword !== confirmPassword) {
       return res.status(400).json({
         success: false,
-        message: "New password and confirm password do not match",
+        message:
+          "New password and confirm password do not match",
       });
     }
 
-    // Minimum password length
     if (newPassword.length < 8) {
       return res.status(400).json({
         success: false,
-        message: "New password must be at least 8 characters",
+        message:
+          "New password must be at least 8 characters",
       });
     }
 
-    // Get current user password
+    if (Buffer.byteLength(newPassword, "utf8") > 72) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "New password cannot exceed 72 bytes",
+      });
+    }
+
     const [users] = await db.query(
       `
       SELECT
-        id,
-        password
+        user_id,
+        password_hash,
+        auth_method
       FROM users
-      WHERE id = ?
+      WHERE user_id = ?
+        AND status = 'active'
       LIMIT 1
       `,
       [userId]
@@ -57,14 +72,23 @@ const changePassword = async (req, res) => {
     if (users.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "Active user not found",
       });
     }
 
-    // Verify current password
+    const user = users[0];
+
+    if (!user.password_hash) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Password change is unavailable for this account",
+      });
+    }
+
     const passwordMatches = await bcrypt.compare(
       currentPassword,
-      users[0].password
+      user.password_hash
     );
 
     if (!passwordMatches) {
@@ -74,10 +98,9 @@ const changePassword = async (req, res) => {
       });
     }
 
-    // Don't allow same password
     const samePassword = await bcrypt.compare(
       newPassword,
-      users[0].password
+      user.password_hash
     );
 
     if (samePassword) {
@@ -88,18 +111,16 @@ const changePassword = async (req, res) => {
       });
     }
 
-    // Hash new password
     const hashedPassword = await bcrypt.hash(
       newPassword,
-      10
+      12
     );
 
-    // Update password
     await db.query(
       `
       UPDATE users
-      SET password = ?
-      WHERE id = ?
+      SET password_hash = ?
+      WHERE user_id = ?
       `,
       [hashedPassword, userId]
     );
@@ -108,9 +129,11 @@ const changePassword = async (req, res) => {
       success: true,
       message: "Password changed successfully",
     });
-
   } catch (error) {
-    console.error("Change Password Error:", error);
+    console.error(
+      "Change Password Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
