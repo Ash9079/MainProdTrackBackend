@@ -58,6 +58,9 @@ const auditLogRoutes = require(
   "./routes/auditLogRoutes"
 );
 
+const settingsRoutes = require(
+  "./routes/settingsRoutes"
+);
 
 
 // ============================================
@@ -164,6 +167,11 @@ app.use(
 app.use(
   "/api/audit-logs",
   auditLogRoutes
+);
+
+app.use(
+  "/api/settings",
+  settingsRoutes
 );
 // ============================================
 // SERVER

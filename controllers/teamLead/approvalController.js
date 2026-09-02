@@ -337,38 +337,40 @@ if (dailyEntryResult.affectedRows !== 1) {
   );
 }
 
-    await connection.query(
-      `
-      INSERT INTO notification
-      (
-        user_id,
-        type_id,
-        title,
-        body,
-        link_hash,
-        is_read
-      )
-      VALUES (
-        ?,
-        (
-          SELECT type_id
-          FROM notification_type
-          WHERE code = 'correction_approved'
-          LIMIT 1
-        ),
-        ?,
-        ?,
-        '#/correction-requests',
-        0
-      )
-      `,
-      [
-        requests[0].requested_by,
-        "Correction approved",
-        `Your correction request #${requestId} was approved.`,
-      ]
-    );
+  const [notificationTypes] =
+  await connection.query(
+    `
+    SELECT type_id
+    FROM notification_type
+    WHERE code = 'correction_approved'
+      AND is_enabled = 0
+    LIMIT 1
+    `
+  );
 
+if (notificationTypes.length > 0) {
+  await connection.query(
+    `
+    INSERT INTO notification
+    (
+      user_id,
+      type_id,
+      title,
+      body,
+      link_hash,
+      is_read
+    )
+    VALUES (?, ?, ?, ?, ?, 0)
+    `,
+    [
+      requests[0].requested_by,
+      notificationTypes[0].type_id,
+      "Correction approved",
+      `Your correction request #${requestId} was approved.`,
+      "#correction-requests",
+    ]
+  );
+}
     await connection.query(
       `
       INSERT INTO audit_log
@@ -592,6 +594,7 @@ const rejectCorrectionRequest = async (req, res) => {
         SELECT type_id
         FROM notification_type
         WHERE code = 'correction_rejected'
+         AND is_enabled = 0
         LIMIT 1
         `
       );

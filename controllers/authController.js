@@ -65,6 +65,35 @@ const recordLoginEvent = async ({
   }
 };
 
+const getSessionTimeoutMinutes =
+  async () => {
+    const [rows] = await db.query(
+      `
+      SELECT setting_value
+      FROM app_setting
+      WHERE setting_key =
+        'session_timeout_minutes'
+      LIMIT 1
+      `
+    );
+
+    const timeoutMinutes = Number(
+      rows[0]?.setting_value
+    );
+
+    const allowedTimeouts = [
+      15,
+      30,
+      60,
+    ];
+
+    return allowedTimeouts.includes(
+      timeoutMinutes
+    )
+      ? timeoutMinutes
+      : 30;
+  };
+
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -165,7 +194,11 @@ const login = async (req, res) => {
       });
     }
 
+    const sessionTimeoutMinutes =
+    await getSessionTimeoutMinutes();
+
     const token = jwt.sign(
+      
       {
         id: user.user_id,
         employeeId: user.emp_code,
@@ -173,7 +206,8 @@ const login = async (req, res) => {
       },
       process.env.JWT_SECRET,
       {
-        expiresIn: process.env.JWT_EXPIRES_IN || "8h",
+        expiresIn:
+          process.env.JWT_EXPIRES_IN || "8h",
       }
     );
 
@@ -196,6 +230,7 @@ const login = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Login successful",
+      sessionTimeoutMinutes,
       token,
       user: {
         id: user.user_id,
@@ -221,6 +256,7 @@ const login = async (req, res) => {
     });
   }
 };
+
 
 module.exports = {
   login,
