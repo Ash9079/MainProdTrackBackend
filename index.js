@@ -56,8 +56,8 @@ const settingsRoutes = require(
   "./routes/settingsRoutes"
 );
 
-
-
+// Imports Administrator dashboard routes
+const adminDashboardRoutes = require("./routes/administrator/dashboardRoutes");
 
 
 // ============================================
@@ -167,6 +167,12 @@ app.use(
 app.use(
   "/api/settings",
   settingsRoutes
+);
+
+// Registers Administrator dashboard APIs under /api/admin
+app.use(
+  "/api/admin", 
+  adminDashboardRoutes
 );
 
 // ============================================
