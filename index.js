@@ -52,6 +52,11 @@ const complianceRoutes = require( "./routes/complianceRoutes");
 const auditLogRoutes = require( "./routes/auditLogRoutes");
 // Imports Administrator Daily Entry Locking Rules routes.
 const adminLockingRulesRoutes = require("./routes/administrator/lockingRulesRoutes");
+const settingsRoutes = require(
+  "./routes/settingsRoutes"
+);
+
+
 
 
 
@@ -153,6 +158,17 @@ app.use("/api/compliance",complianceRoutes);
 app.use("/api/audit-logs",auditLogRoutes);
 // Mounts Administrator Daily Entry Locking Rules APIs.
 app.use("/api/admin", adminLockingRulesRoutes);
+
+app.use(
+  "/api/audit-logs",
+  auditLogRoutes
+);
+
+app.use(
+  "/api/settings",
+  settingsRoutes
+);
+
 // ============================================
 // SERVER
 // ============================================
