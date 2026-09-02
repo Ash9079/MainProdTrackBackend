@@ -1,18 +1,65 @@
+// Imports Express to create the Guide API router.
 const express = require("express");
 
+// Imports authentication middleware to validate the logged-in user.
 const authenticate = require("../middleware/authMiddleware");
+
+// Imports role middleware to restrict Guide APIs by application role.
 const allowRoles = require("../middleware/roleMiddleware");
 
+// Imports Multer middleware used for PDF guide uploads.
+const guideUpload = require(
+  "../middleware/guideUploadMiddleware"
+);
+
+// Imports all shared Guide controller functions.
 const {
   getLatestGuide,
   acknowledgeGuide,
   getGuideHistory,
-   downloadGuide,
+  downloadGuide,
+  getGuideManagerList,
+  getGuideCompliance,
+  uploadGuideVersion,
 } = require("../controllers/guideController");
 
+// Creates the shared Guide router.
 const router = express.Router();
 
-// Gets the latest active guide for Indexer or Team Lead
+// ======================================================
+// CORE TEAM / ADMINISTRATOR GUIDE MANAGER
+// ======================================================
+
+// Gets all latest guides with acknowledgement percentages.
+router.get(
+  "/manage",
+  authenticate,
+  allowRoles("coreTeam", "administrator"),
+  getGuideManagerList
+);
+
+// Uploads a new PDF version of an existing guide.
+router.post(
+  "/manage/upload",
+  authenticate,
+  allowRoles("coreTeam", "administrator"),
+  guideUpload.single("file"),
+  uploadGuideVersion
+);
+
+// Gets acknowledgement compliance for one guide version.
+router.get(
+  "/manage/:id/compliance",
+  authenticate,
+  allowRoles("coreTeam", "administrator"),
+  getGuideCompliance
+);
+
+// ======================================================
+// INDEXER / TEAM LEAD GUIDE APIs
+// ======================================================
+
+// Gets the latest active guides assigned to the logged-in user.
 router.get(
   "/latest",
   authenticate,
@@ -20,7 +67,7 @@ router.get(
   getLatestGuide
 );
 
-// Saves guide acknowledgement for Indexer or Team Lead
+// Saves acknowledgement for one guide version.
 router.post(
   "/:id/acknowledge",
   authenticate,
@@ -28,20 +75,21 @@ router.post(
   acknowledgeGuide
 );
 
-// Gets guide version history for an allowed project
+// Gets version history for a project assigned to the user.
 router.get(
   "/:projectId/history",
   authenticate,
   allowRoles("indexer", "teamLead"),
   getGuideHistory
 );
-// Downloads a guide file
+
+// Downloads a guide only after authentication and role validation.
 router.get(
   "/:id/download",
   authenticate,
-  downloadGuide,
   allowRoles("indexer", "teamLead"),
-  
+  downloadGuide
 );
 
+// Exports the Guide router for use in index.js.
 module.exports = router;
