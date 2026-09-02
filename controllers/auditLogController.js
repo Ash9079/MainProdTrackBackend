@@ -129,6 +129,106 @@ const getAuditLogs = async (req, res) => {
   }
 };
 
+const getLoginEvents = async (req, res) => {
+  try {
+    const page = Math.max(
+      Number(req.query.page) || 1,
+      1
+    );
+
+    const pageSize = Math.min(
+      Math.max(
+        Number(req.query.pageSize) || 50,
+        1
+      ),
+      100
+    );
+
+    const offset =
+      (page - 1) * pageSize;
+
+    const [[events], [countRows]] =
+      await Promise.all([
+        db.query(
+          `
+          SELECT
+            le.login_id,
+            le.user_id,
+            le.username_tried,
+
+            COALESCE(
+              u.full_name,
+              le.username_tried,
+              'Unknown user'
+            ) AS user_name,
+
+            u.emp_code,
+
+            le.success,
+            le.method,
+
+            INET6_NTOA(
+              le.ip_address
+            ) AS ip_address,
+
+            le.user_agent,
+            le.created_at
+
+          FROM login_event le
+
+          LEFT JOIN users u
+            ON u.user_id = le.user_id
+
+          ORDER BY
+            le.created_at DESC,
+            le.login_id DESC
+
+          LIMIT ?
+          OFFSET ?
+          `,
+          [
+            pageSize,
+            offset,
+          ]
+        ),
+
+        db.query(`
+          SELECT COUNT(*) AS total
+          FROM login_event
+        `),
+      ]);
+
+    const total = Number(
+      countRows[0]?.total || 0
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: events.length,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(
+        total / pageSize
+      ),
+      events,
+    });
+  } catch (error) {
+    console.error(
+      "Get Login Events Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to load login events",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAuditLogs,
+  getLoginEvents,
 };

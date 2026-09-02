@@ -10,6 +10,7 @@ const allowRoles = require(
 
 const {
   getAuditLogs,
+  getLoginEvents,
 } = require(
   "../controllers/auditLogController"
 );
@@ -21,6 +22,13 @@ router.get(
   authenticate,
   allowRoles("administrator"),
   getAuditLogs
+);
+
+router.get(
+  "/login-events",
+  authenticate,
+  allowRoles("administrator"),
+  getLoginEvents
 );
 
 module.exports = router;

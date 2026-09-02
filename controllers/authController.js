@@ -9,6 +9,62 @@ const roleKeyMap = {
   admin: "administrator",
 };
 
+const recordLoginEvent = async ({
+  req,
+  userId = null,
+  usernameTried = "",
+  success = false,
+}) => {
+  try {
+    const ipAddress =
+      req.ip ||
+      req.socket?.remoteAddress ||
+      null;
+
+    const userAgent = String(
+      req.headers["user-agent"] || ""
+    ).slice(0, 255);
+
+    await db.query(
+      `
+      INSERT INTO login_event
+      (
+        user_id,
+        username_tried,
+        success,
+        method,
+        ip_address,
+        user_agent,
+        created_at
+      )
+      VALUES (
+        ?,
+        ?,
+        ?,
+        'password',
+        INET6_ATON(?),
+        ?,
+        NOW()
+      )
+      `,
+      [
+        userId,
+        String(usernameTried || "")
+          .slice(0, 60),
+        success ? 1 : 0,
+        ipAddress,
+        userAgent || null,
+      ]
+    );
+  } catch (error) {
+    // Login should continue even if event logging fails.
+    console.error(
+      "Login Event Error:",
+      error
+    );
+  }
+};
+
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -45,7 +101,15 @@ const login = async (req, res) => {
       [email, email]
     );
 
+    
+
     if (users.length === 0) {
+      await recordLoginEvent({
+        req,
+        usernameTried: email,
+        success: false,
+      });
+
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
@@ -55,6 +119,12 @@ const login = async (req, res) => {
     const user = users[0];
 
     if (user.status !== "active") {
+      await recordLoginEvent({
+        req,
+        userId: user.user_id,
+        usernameTried: email,
+        success: false,
+      });
       return res.status(403).json({
         success: false,
         message: "Your account is inactive",
@@ -67,6 +137,13 @@ const login = async (req, res) => {
     );
 
     if (!passwordMatches) {
+      await recordLoginEvent({
+        req,
+        userId: user.user_id,
+        usernameTried: email,
+        success: false,
+      });
+
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
@@ -76,6 +153,12 @@ const login = async (req, res) => {
     const roleKey = roleKeyMap[user.role_code];
 
     if (!roleKey) {
+      await recordLoginEvent({
+        req,
+        userId: user.user_id,
+        usernameTried: email,
+        success: false,
+      });
       return res.status(403).json({
         success: false,
         message: "Invalid user role",
@@ -102,6 +185,13 @@ const login = async (req, res) => {
       `,
       [user.user_id]
     );
+
+    await recordLoginEvent({
+      req,
+      userId: user.user_id,
+      usernameTried: email,
+      success: true,
+    });
 
     return res.status(200).json({
       success: true,
