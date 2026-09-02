@@ -248,6 +248,7 @@ const getUserProjects = async (req, res) => {
 // ============================================================
 
 const createUser = async (req, res) => {
+ 
   let connection;
 
   try {
