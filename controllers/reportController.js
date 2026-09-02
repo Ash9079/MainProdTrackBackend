@@ -127,6 +127,56 @@ const getMyReportSummary = async (req, res) => {
       );
     }
 
+    // CORE TEAM AND ADMINISTRATOR
+else if (
+  role === "coreTeam" ||
+  role === "administrator"
+) {
+  const conditions = [
+    "u.status = 'active'",
+    "r.code = 'indexer'",
+    dateCondition,
+  ];
+
+  const queryValues = [];
+
+  if (projectId !== null) {
+    conditions.push("de.project_id = ?");
+    queryValues.push(projectId);
+  }
+
+  if (employeeId !== null) {
+    conditions.push("u.user_id = ?");
+    queryValues.push(employeeId);
+  }
+
+  [rows] = await db.query(
+    `
+    SELECT
+      COALESCE(
+        SUM(de.docs_received),
+        0
+      ) AS totalReceived,
+
+      COALESCE(
+        SUM(de.docs_completed),
+        0
+      ) AS totalCompleted
+
+    FROM users u
+
+    JOIN role r
+      ON r.role_id = u.role_id
+
+    JOIN daily_entry de
+      ON de.user_id = u.user_id
+
+    WHERE ${conditions.join(" AND ")}
+    `,
+    queryValues
+  );
+}
+
     else {
       return res.status(403).json({
         success: false,
@@ -337,6 +387,71 @@ const getMyDailyProduction = async (req, res) => {
       );
     }
 
+    // CORE TEAM AND ADMINISTRATOR
+else if (
+  role === "coreTeam" ||
+  role === "administrator"
+) {
+  const conditions = [
+    "u.status = 'active'",
+    "r.code = 'indexer'",
+    dateCondition,
+  ];
+
+  const queryValues = [];
+
+  if (projectId !== null) {
+    conditions.push("de.project_id = ?");
+    queryValues.push(projectId);
+  }
+
+  if (employeeId !== null) {
+    conditions.push("u.user_id = ?");
+    queryValues.push(employeeId);
+  }
+
+  [production] = await db.query(
+    `
+    SELECT
+      DATE_FORMAT(
+        de.production_date,
+        '%Y-%m-%d'
+      ) AS production_date,
+
+      DAYNAME(
+        de.production_date
+      ) AS day_name,
+
+      COALESCE(
+        SUM(de.docs_received),
+        0
+      ) AS received,
+
+      COALESCE(
+        SUM(de.docs_completed),
+        0
+      ) AS completed
+
+    FROM users u
+
+    JOIN role r
+      ON r.role_id = u.role_id
+
+    JOIN daily_entry de
+      ON de.user_id = u.user_id
+
+    WHERE ${conditions.join(" AND ")}
+
+    GROUP BY
+      de.production_date,
+      DAYNAME(de.production_date)
+
+    ORDER BY de.production_date ASC
+    `,
+    queryValues
+  );
+}
+
     else {
       return res.status(403).json({
         success: false,
@@ -412,20 +527,47 @@ const getEmployeeProduction = async (req, res) => {
     const dateCondition =
       getProductionDateCondition(period);
 
-    let userCondition;
+      let userCondition;
+      let userConditionValues = [];
 
-    if (role === "indexer") {
-      userCondition = "u.user_id = ?";
-    } else if (role === "teamLead") {
-      userCondition =
-        "u.team_lead_id = ? AND u.status = 'active'";
-    } else {
-      return res.status(403).json({
-        success: false,
-        message:
-          "You are not allowed to access this report",
-      });
-    }
+      if (role === "indexer") {
+        userCondition = "u.user_id = ?";
+        userConditionValues = [userId];
+      }
+
+      else if (role === "teamLead") {
+        userCondition = `
+          u.team_lead_id = ?
+          AND u.status = 'active'
+        `;
+
+        userConditionValues = [userId];
+      }
+
+      else if (
+        role === "coreTeam" ||
+        role === "administrator"
+      ) {
+        userCondition = `
+          u.status = 'active'
+          AND u.role_id = (
+            SELECT role_id
+            FROM role
+            WHERE code = 'indexer'
+            LIMIT 1
+          )
+        `;
+
+        userConditionValues = [];
+      }
+
+      else {
+        return res.status(403).json({
+          success: false,
+          message:
+            "You are not allowed to access this report",
+        });
+      }
 
     let projectListCondition = "";
     let productionProjectCondition = "";
@@ -450,8 +592,8 @@ const getEmployeeProduction = async (req, res) => {
       queryValues.push(projectId);
     }
 
-    // Logged-in user/team-lead condition
-    queryValues.push(userId);
+    // Values required by the role condition
+      queryValues.push(...userConditionValues);
 
     // Selected employee
     if (employeeId !== null) {

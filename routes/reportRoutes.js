@@ -15,7 +15,12 @@ const router = express.Router();
 router.get(
   "/my-summary",
   authenticate,
-  allowRoles("indexer","teamLead"),
+  allowRoles(
+  "indexer",
+  "teamLead",
+  "coreTeam",
+  "administrator"
+),
   getMyReportSummary
 );
 
@@ -23,14 +28,24 @@ router.get(
 router.get(
   "/my-daily-production",
   authenticate,
-  allowRoles("indexer","teamLead"),
+  allowRoles(
+  "indexer",
+  "teamLead",
+  "coreTeam",
+  "administrator"
+),
   getMyDailyProduction
 );
 
 router.get(
   "/employee-production",
   authenticate,
-  allowRoles("indexer", "teamLead"),
+  allowRoles(
+  "indexer",
+  "teamLead",
+  "coreTeam",
+  "administrator"
+),
   getEmployeeProduction
 );
 

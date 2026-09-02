@@ -15,7 +15,12 @@ const router = express.Router();
 router.get(
   "/my",
   authenticate,
-  allowRoles("indexer","teamLead"),
+  allowRoles(
+    "indexer",
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
   getMyNotifications
 );
 
@@ -23,7 +28,12 @@ router.get(
 router.patch(
   "/read-all",
   authenticate,
-  allowRoles("indexer","teamLead"),
+   allowRoles(
+    "indexer",
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
   markAllAsRead
 );
 
@@ -31,7 +41,12 @@ router.patch(
 router.patch(
   "/:id/read",
   authenticate,
-  allowRoles("indexer","teamLead"),
+   allowRoles(
+    "indexer",
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
   markAsRead
 );
 

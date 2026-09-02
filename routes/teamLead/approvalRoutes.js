@@ -16,7 +16,11 @@ const router = express.Router();
 router.get(
   "/approvals",
   authenticate,
-  allowRoles("teamLead"),
+  allowRoles(
+      "teamLead",
+      "coreTeam",
+      "administrator"
+    ),
   getPendingApprovals
 );
 
@@ -24,7 +28,11 @@ router.get(
 router.patch(
   "/approvals/:id/approve",
   authenticate,
-  allowRoles("teamLead"),
+  allowRoles(
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
   approveCorrectionRequest
 );
 
@@ -32,14 +40,22 @@ router.patch(
 router.patch(
   "/approvals/:id/reject",
   authenticate,
-  allowRoles("teamLead"),
+  allowRoles(
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
   rejectCorrectionRequest
 );
 
 router.get(
   "/approvals/summary",
   authenticate,
-  allowRoles("teamLead"),
+    allowRoles(
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
   getApprovalSummary
 );
 

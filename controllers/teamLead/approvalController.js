@@ -3,7 +3,43 @@ const db = require("../../config/db");
 // Gets pending correction requests from the Team Lead's team
 const getPendingApprovals = async (req, res) => {
   try {
-    const teamLeadId = req.user.id;
+    const userId = req.user.id;
+    const role = req.user.role;
+
+    let scopeCondition = "";
+    let queryValues = [];
+
+    // Team Lead sees only their team's requests
+    if (role === "teamLead") {
+      scopeCondition = `
+        AND u.team_lead_id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM project_assignment pa
+          WHERE pa.project_id = cr.project_id
+            AND pa.user_id = ?
+        )
+      `;
+
+      queryValues = [userId, userId];
+    }
+
+    // Core Team and Administrator see all requests
+    else if (
+      role === "coreTeam" ||
+      role === "administrator"
+    ) {
+      scopeCondition = "";
+      queryValues = [];
+    }
+
+    else {
+      return res.status(403).json({
+        success: false,
+        message:
+          "You are not allowed to access corrections",
+      });
+    }
 
     const [requests] = await db.query(
       `
@@ -11,8 +47,10 @@ const getPendingApprovals = async (req, res) => {
         cr.request_id AS id,
         cr.request_id,
         cr.entry_id,
+
         DATE_FORMAT(
-          cr.production_date, '%Y-%m-%d'
+          cr.production_date,
+          '%Y-%m-%d'
         ) AS production_date,
 
         cr.field_name,
@@ -44,21 +82,14 @@ const getPendingApprovals = async (req, res) => {
       JOIN project p
         ON p.project_id = cr.project_id
 
-      WHERE u.team_lead_id = ?
-        AND cs.code = 'pending'
-
-        AND EXISTS (
-          SELECT 1
-          FROM project_assignment pa
-          WHERE pa.project_id = cr.project_id
-            AND pa.user_id = ?
-        )
+      WHERE cs.code = 'pending'
+        ${scopeCondition}
 
       ORDER BY
         cr.requested_at DESC,
         cr.request_id DESC
       `,
-      [teamLeadId, teamLeadId]
+      queryValues
     );
 
     return res.status(200).json({
@@ -66,6 +97,7 @@ const getPendingApprovals = async (req, res) => {
       count: requests.length,
       requests,
     });
+
   } catch (error) {
     console.error(
       "Get Pending Approvals Error:",
@@ -74,7 +106,8 @@ const getPendingApprovals = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Failed to load pending approvals",
+      message: "Failed to load correction requests",
+      error: error.message,
     });
   }
 };
@@ -86,7 +119,36 @@ const approveCorrectionRequest = async (req, res) => {
   let transactionStarted = false;
 
   try {
-    const teamLeadId = req.user.id;
+    const reviewerId = req.user.id;
+const role = req.user.role;
+
+let requestScope = "";
+let scopeValues = [];
+
+if (role === "teamLead") {
+  requestScope = `
+    AND u.team_lead_id = ?
+    AND EXISTS (
+      SELECT 1
+      FROM project_assignment pa
+      WHERE pa.project_id = cr.project_id
+        AND pa.user_id = ?
+    )
+  `;
+
+  scopeValues = [reviewerId, reviewerId];
+} else if (
+  role === "coreTeam" ||
+  role === "administrator"
+) {
+  requestScope = "";
+} else {
+  return res.status(403).json({
+    success: false,
+    message:
+      "You are not allowed to approve corrections",
+  });
+}
     const requestId = Number(req.params.id);
     const reviewComment = String(
       req.body?.reviewComment || ""
@@ -123,8 +185,19 @@ const approveCorrectionRequest = async (req, res) => {
         cr.request_id,
         cr.requested_by,
         cr.status_id,
+        cr.entry_id,
+        cr.field_name,
+        cr.new_value,
+
+        de.docs_received,
+        de.docs_completed,
+
         cs.code AS status
+
       FROM correction_request cr
+
+      JOIN daily_entry de
+        ON de.entry_id = cr.entry_id
 
       JOIN correction_status cs
         ON cs.status_id = cr.status_id
@@ -133,18 +206,11 @@ const approveCorrectionRequest = async (req, res) => {
         ON u.user_id = cr.requested_by
 
       WHERE cr.request_id = ?
-        AND u.team_lead_id = ?
-
-        AND EXISTS (
-          SELECT 1
-          FROM project_assignment pa
-          WHERE pa.project_id = cr.project_id
-            AND pa.user_id = ?
-        )
+        ${requestScope}
 
       FOR UPDATE
       `,
-      [requestId, teamLeadId, teamLeadId]
+      [requestId, ...scopeValues]
     );
 
     if (requests.length === 0) {
@@ -181,7 +247,7 @@ const approveCorrectionRequest = async (req, res) => {
       `,
       [
         statuses[0].status_id,
-        teamLeadId,
+        reviewerId,
         reviewComment || null,
         requestId,
         requests[0].status_id,
@@ -191,6 +257,85 @@ const approveCorrectionRequest = async (req, res) => {
     if (result.affectedRows !== 1) {
       reject(409, "Correction request changed. Refresh and try again");
     }
+
+    // Allowed daily-entry fields that can be corrected.
+const editableFields = {
+  docs_received: "docs_received",
+  docs_completed: "docs_completed",
+};
+
+const requestedField = String(
+  requests[0].field_name || ""
+)
+  .trim()
+  .toLowerCase();
+
+const columnName = editableFields[requestedField];
+
+if (!columnName) {
+  reject(
+    400,
+    `The field '${requestedField}' cannot be corrected`
+  );
+}
+
+const correctedValue = Number(
+  requests[0].new_value
+);
+
+if (
+  !Number.isSafeInteger(correctedValue) ||
+  correctedValue < 0
+) {
+  reject(
+    400,
+    "The corrected value must be a non-negative integer"
+  );
+}
+
+// Completed documents cannot exceed received documents.
+if (
+  requestedField === "docs_completed" &&
+  correctedValue >
+    Number(requests[0].docs_received)
+) {
+  reject(
+    400,
+    "Completed documents cannot exceed received documents"
+  );
+}
+
+// Received documents cannot be less than completed documents.
+if (
+  requestedField === "docs_received" &&
+  correctedValue <
+    Number(requests[0].docs_completed)
+) {
+  reject(
+    400,
+    "Received documents cannot be less than completed documents"
+  );
+}
+
+const [dailyEntryResult] =
+  await connection.query(
+    `
+    UPDATE daily_entry
+    SET ${columnName} = ?
+    WHERE entry_id = ?
+    `,
+    [
+      correctedValue,
+      requests[0].entry_id,
+    ]
+  );
+
+if (dailyEntryResult.affectedRows !== 1) {
+  reject(
+    404,
+    "Original daily entry was not found"
+  );
+}
 
     await connection.query(
       `
@@ -237,7 +382,7 @@ const approveCorrectionRequest = async (req, res) => {
       VALUES (?, ?, ?, ?, ?)
       `,
       [
-        teamLeadId,
+        reviewerId,
         "Approved correction",
         "correction_request",
         String(requestId),
@@ -284,38 +429,94 @@ const approveCorrectionRequest = async (req, res) => {
 
 // Rejects a correction request and notifies the Indexer
 const rejectCorrectionRequest = async (req, res) => {
-  const connection = await db.getConnection();
+  let connection;
+  let transactionStarted = false;
 
   try {
-    const teamLeadId = req.user.id;
+    const reviewerId = req.user.id;
+    const role = req.user.role;
     const requestId = Number(req.params.id);
+
     const reviewComment = String(
-      req.body.reviewComment || ""
+      req.body?.reviewComment || ""
     ).trim();
 
-    if (!Number.isSafeInteger(requestId) || requestId <= 0) {
+    let requestScope = "";
+    let scopeValues = [];
+
+    if (role === "teamLead") {
+      requestScope = `
+        AND u.team_lead_id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM project_assignment pa
+          WHERE pa.project_id = cr.project_id
+            AND pa.user_id = ?
+        )
+      `;
+
+      scopeValues = [reviewerId, reviewerId];
+    } else if (
+      role === "coreTeam" ||
+      role === "administrator"
+    ) {
+      requestScope = "";
+    } else {
+      return res.status(403).json({
+        success: false,
+        message:
+          "You are not allowed to reject corrections",
+      });
+    }
+
+    if (
+      !Number.isSafeInteger(requestId) ||
+      requestId <= 0
+    ) {
       return res.status(400).json({
         success: false,
-        message: "A valid correction request ID is required",
+        message:
+          "A valid correction request ID is required",
       });
     }
 
     if (reviewComment.length > 500) {
       return res.status(400).json({
         success: false,
-        message: "Review comment cannot exceed 500 characters",
+        message:
+          "Review comment cannot exceed 500 characters",
       });
     }
 
+    connection = await db.getConnection();
     await connection.beginTransaction();
+    transactionStarted = true;
+
+    const reject = (httpStatus, message) => {
+      throw Object.assign(new Error(message), {
+        httpStatus,
+      });
+    };
 
     const [requests] = await connection.query(
       `
       SELECT
         cr.request_id,
         cr.requested_by,
+        cr.status_id,
+        cr.entry_id,
+        cr.field_name,
+        cr.new_value,
+
+        de.docs_received,
+        de.docs_completed,
+
         cs.code AS status
+
       FROM correction_request cr
+
+      JOIN daily_entry de
+        ON de.entry_id = cr.entry_id
 
       JOIN correction_status cs
         ON cs.status_id = cr.status_id
@@ -324,36 +525,22 @@ const rejectCorrectionRequest = async (req, res) => {
         ON u.user_id = cr.requested_by
 
       WHERE cr.request_id = ?
-        AND u.team_lead_id = ?
-        AND EXISTS (
-          SELECT 1
-          FROM project_assignment pa
-          WHERE pa.user_id = ?
-            AND pa.project_id = cr.project_id
-        )
+        ${requestScope}
 
-      LIMIT 1
       FOR UPDATE
       `,
-      [requestId, teamLeadId, teamLeadId]
+      [requestId, ...scopeValues]
     );
 
     if (requests.length === 0) {
-      await connection.rollback();
-
-      return res.status(404).json({
-        success: false,
-        message: "Correction request not found",
-      });
+      reject(404, "Correction request not found");
     }
 
     if (requests[0].status !== "pending") {
-      await connection.rollback();
-
-      return res.status(400).json({
-        success: false,
-        message: "Correction request has already been reviewed",
-      });
+      reject(
+        409,
+        "Correction request has already been reviewed"
+      );
     }
 
     const [statuses] = await connection.query(
@@ -366,15 +553,13 @@ const rejectCorrectionRequest = async (req, res) => {
     );
 
     if (statuses.length === 0) {
-      await connection.rollback();
-
-      return res.status(500).json({
-        success: false,
-        message: "Rejected correction status is not configured",
-      });
+      reject(
+        500,
+        "Rejected correction status is not configured"
+      );
     }
 
-    await connection.query(
+    const [result] = await connection.query(
       `
       UPDATE correction_request
       SET
@@ -383,23 +568,33 @@ const rejectCorrectionRequest = async (req, res) => {
         approved_at = NOW(),
         approver_comments = ?
       WHERE request_id = ?
+        AND status_id = ?
       `,
       [
         statuses[0].status_id,
-        teamLeadId,
+        reviewerId,
         reviewComment || null,
         requestId,
+        requests[0].status_id,
       ]
     );
 
-    const [notificationTypes] = await connection.query(
-      `
-      SELECT type_id
-      FROM notification_type
-      WHERE code = 'correction_rejected'
-      LIMIT 1
-      `
-    );
+    if (result.affectedRows !== 1) {
+      reject(
+        409,
+        "Correction request changed. Refresh and try again"
+      );
+    }
+
+    const [notificationTypes] =
+      await connection.query(
+        `
+        SELECT type_id
+        FROM notification_type
+        WHERE code = 'correction_rejected'
+        LIMIT 1
+        `
+      );
 
     if (notificationTypes.length > 0) {
       await connection.query(
@@ -419,7 +614,7 @@ const rejectCorrectionRequest = async (req, res) => {
           requests[0].requested_by,
           notificationTypes[0].type_id,
           "Correction rejected",
-          "Your correction request has been rejected by your Team Lead.",
+          `Your correction request #${requestId} was rejected.`,
           "#correction-requests",
         ]
       );
@@ -438,40 +633,83 @@ const rejectCorrectionRequest = async (req, res) => {
       VALUES (?, ?, ?, ?, ?)
       `,
       [
-        teamLeadId,
+        reviewerId,
         "Rejected correction",
         "correction_request",
         String(requestId),
-        reviewComment || null,
+        reviewComment
+          ? `Correction rejected. Comment: ${reviewComment}`
+          : "Correction rejected",
       ]
     );
 
     await connection.commit();
+    transactionStarted = false;
 
     return res.status(200).json({
       success: true,
-      message: "Correction request rejected successfully",
+      message:
+        "Correction request rejected successfully",
       requestId,
       status: "REJECTED",
     });
   } catch (error) {
-    await connection.rollback();
+    if (connection && transactionStarted) {
+      await connection.rollback();
+    }
 
-    console.error("Reject Correction Error:", error);
+    console.error(
+      "Reject Correction Error:",
+      error
+    );
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to reject correction request",
-      error: error.message,
-    });
+    return res
+      .status(error.httpStatus || 500)
+      .json({
+        success: false,
+        message: error.httpStatus
+          ? error.message
+          : "Failed to reject correction request",
+      });
   } finally {
-    connection.release();
+    if (connection) {
+      connection.release();
+    }
   }
 };
 
 const getApprovalSummary = async (req, res) => {
   try {
-    const teamLeadId = req.user.id;
+    const userId = req.user.id;
+    const role = req.user.role;
+
+    let scopeCondition = "";
+    let queryValues = [];
+
+    if (role === "teamLead") {
+      scopeCondition = `
+        AND u.team_lead_id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM project_assignment pa
+          WHERE pa.user_id = ?
+            AND pa.project_id = cr.project_id
+        )
+      `;
+
+      queryValues = [userId, userId];
+    } else if (
+      role === "coreTeam" ||
+      role === "administrator"
+    ) {
+      scopeCondition = "";
+    } else {
+      return res.status(403).json({
+        success: false,
+        message:
+          "You are not allowed to access correction summary",
+      });
+    }
 
     const [rows] = await db.query(
       `
@@ -486,7 +724,8 @@ const getApprovalSummary = async (req, res) => {
         SUM(
           CASE
             WHEN cs.code = 'approved'
-             AND cr.approved_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+              AND cr.approved_at >=
+                DATE_FORMAT(CURDATE(), '%Y-%m-01')
             THEN 1
             ELSE 0
           END
@@ -495,7 +734,8 @@ const getApprovalSummary = async (req, res) => {
         SUM(
           CASE
             WHEN cs.code = 'rejected'
-             AND cr.approved_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+              AND cr.approved_at >=
+                DATE_FORMAT(CURDATE(), '%Y-%m-01')
             THEN 1
             ELSE 0
           END
@@ -505,7 +745,7 @@ const getApprovalSummary = async (req, res) => {
           AVG(
             CASE
               WHEN cs.code IN ('approved', 'rejected')
-               AND cr.approved_at IS NOT NULL
+                AND cr.approved_at IS NOT NULL
               THEN TIMESTAMPDIFF(
                 MINUTE,
                 cr.requested_at,
@@ -525,25 +765,26 @@ const getApprovalSummary = async (req, res) => {
       JOIN users u
         ON u.user_id = cr.requested_by
 
-      WHERE u.team_lead_id = ?
-        AND EXISTS (
-          SELECT 1
-          FROM project_assignment pa
-          WHERE pa.user_id = ?
-            AND pa.project_id = cr.project_id
-        )
+      WHERE 1 = 1
+        ${scopeCondition}
       `,
-      [teamLeadId, teamLeadId]
+      queryValues
     );
 
-    const summary = rows[0];
+    const summary = rows[0] || {};
 
     return res.status(200).json({
       success: true,
       summary: {
-        awaitingReview: Number(summary.awaiting_review || 0),
-        approvedMonth: Number(summary.approved_month || 0),
-        rejectedMonth: Number(summary.rejected_month || 0),
+        awaitingReview: Number(
+          summary.awaiting_review || 0
+        ),
+        approvedMonth: Number(
+          summary.approved_month || 0
+        ),
+        rejectedMonth: Number(
+          summary.rejected_month || 0
+        ),
         averageTurnaroundHours: Number(
           summary.average_turnaround_hours || 0
         ),
@@ -554,7 +795,8 @@ const getApprovalSummary = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Failed to load correction approval summary",
+      message:
+        "Failed to load correction approval summary",
       error: error.message,
     });
   }
