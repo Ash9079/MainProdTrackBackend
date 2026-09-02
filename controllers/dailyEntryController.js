@@ -31,6 +31,51 @@ const getPendingRequiredGuides = async (
   return guides;
 };
 
+const sendEntrySubmissionNotification = async (
+  executor,
+  userId,
+  entryId
+) => {
+  try {
+    await executor.query(
+      `
+      INSERT INTO notification
+      (
+        user_id,
+        type_id,
+        title,
+        body,
+        link_hash,
+        is_read,
+        created_at
+      )
+      SELECT
+        ?,
+        nt.type_id,
+        'Daily entry submitted',
+        ?,
+        '#daily-entry',
+        0,
+        NOW()
+      FROM notification_type nt
+      WHERE nt.code =
+        'entry_submission_confirmation'
+        AND nt.is_enabled = 1
+      LIMIT 1
+      `,
+      [
+        userId,
+        `Daily entry #${entryId} was submitted successfully.`,
+      ]
+    );
+  } catch (error) {
+    console.error(
+      "Entry Submission Notification Error:",
+      error
+    );
+  }
+};
+
 const createEntry = async (req, res) => {
   try {
     const {
@@ -55,6 +100,30 @@ const createEntry = async (req, res) => {
 
     const received = Number(documentsReceived || 0);
     const completed = Number(documentsCompleted || 0);
+    const processed = Number(batchesProcessed || 0);
+    const errors = Number(errorsFlagged || 0);
+
+    const numericValues = [
+      received,
+      completed,
+      processed,
+      errors,
+    ];
+
+    if (
+      numericValues.some(
+        (value) =>
+          !Number.isInteger(value) ||
+          value < 0 ||
+          value > 4294967295
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Production values must be non-negative whole numbers",
+      });
+    }
 
     if (completed > received) {
       return res.status(400).json({
@@ -62,6 +131,23 @@ const createEntry = async (req, res) => {
         message: "Completed documents cannot exceed received documents",
       });
     }
+
+    const batchRef = String(batchJobId || "").trim();
+      const remarks = String(notes || "").trim();
+
+      if (batchRef.length > 60) {
+        return res.status(400).json({
+          success: false,
+          message: "Batch ID cannot exceed 60 characters",
+        });
+      }
+
+      if (remarks.length > 500) {
+        return res.status(400).json({
+          success: false,
+          message: "Notes cannot exceed 500 characters",
+        });
+      }
 
     const [assignments] = await db.query(
       `
@@ -148,48 +234,59 @@ const createEntry = async (req, res) => {
 
     const selectedStatus = statuses[0];
 
-    const [result] = await db.query(
-      `
-      INSERT INTO daily_entry
-      (
-        project_id,
-        user_id,
-        production_date,
-        batch_ref,
-        category_id,
-        docs_received,
-        docs_completed,
-        batches_processed,
-        errors_flagged,
-        remarks,
-        status_id,
-        submitted_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        projectId,
-        req.user.id,
-        productionDate,
-        batchJobId || null,
-        categoryId,
-        received,
-        completed,
-        Number(batchesProcessed || 0),
-        Number(errorsFlagged || 0),
-        notes || null,
-        selectedStatus.status_id,
-        selectedStatus.code === "submitted"
-          ? new Date()
-          : null,
-      ]
-    );
+const [result] = await db.query(
+  `
+  INSERT INTO daily_entry
+  (
+    project_id,
+    user_id,
+    production_date,
+    batch_ref,
+    category_id,
+    docs_received,
+    docs_completed,
+    batches_processed,
+    errors_flagged,
+    remarks,
+    status_id,
+    submitted_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  [
+    Number(projectId),
+    req.user.id,
+    productionDate,
+    batchRef,
+    categoryId,
+    received,
+    completed,
+    processed,
+    errors,
+    remarks || null,
+    selectedStatus.status_id,
+    selectedStatus.code === "submitted"
+      ? new Date()
+      : null,
+  ]
+);
 
-    return res.status(201).json({
-      success: true,
-      message: "Daily entry created successfully",
-      entryId: result.insertId,
-    });
+if (selectedStatus.code === "submitted") {
+  await sendEntrySubmissionNotification(
+    db,
+    req.user.id,
+    result.insertId
+  );
+}
+
+return res.status(201).json({
+  success: true,
+  message:
+    selectedStatus.code === "submitted"
+      ? "Daily entry submitted successfully"
+      : "Daily entry draft saved successfully",
+  entryId: result.insertId,
+});
   } catch (error) {
     console.error("Create Daily Entry Error:", error);
 
@@ -208,6 +305,8 @@ const createEntry = async (req, res) => {
     });
   }
 };
+
+
 
 const getMyEntries = async (req, res) => {
   try {
@@ -447,7 +546,7 @@ const updateEntry = async (req, res) => {
       [
         selectedProjectId,
         productionDate,
-        batchRef || null,
+        batchRef,
         projects[0].category_id,
         ...numbers,
         remarks || null,
@@ -475,6 +574,14 @@ const updateEntry = async (req, res) => {
     );
 
     await connection.commit();
+
+    if (statusCode === "submitted") {
+      await sendEntrySubmissionNotification(
+        connection,
+        userId,
+        entryId
+      );
+    }
 
     return res.json({
       success: true,
