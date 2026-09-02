@@ -1,705 +1,408 @@
-// Imports the MySQL database connection.
 const db = require("../../config/db");
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER — get all indexer user_ids who report to this team lead
+// Schema: users.team_lead_id = teamLeadId  AND  role = 'indexer'
+// ─────────────────────────────────────────────────────────────────────────────
+async function getTeamMemberIds(teamLeadId) {
+  const [rows] = await db.query(
+    `SELECT user_id FROM users
+     WHERE team_lead_id = ? AND status = 'active'`,
+    [teamLeadId]
+  );
+  return rows.map((r) => r.user_id);
+}
 
-// Gets the main summary cards for the Team Lead dashboard.
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. MAIN DASHBOARD SUMMARY  GET /api/team-lead/dashboard
+// ─────────────────────────────────────────────────────────────────────────────
 const getTeamLeadDashboard = async (req, res) => {
   try {
-    // Gets the logged-in Team Lead ID from the JWT token.
     const teamLeadId = req.user.id;
+    const memberIds = await getTeamMemberIds(teamLeadId);
+    const teamSize = memberIds.length;
 
-    // Counts how many employees belong to this Team Lead.
-    const [teamResult] = await db.query(
-      `
-      SELECT COUNT(*) AS teamSize
-      FROM team_members
-      WHERE team_lead_id = ?
-      `,
+    if (teamSize === 0) {
+      return res.status(200).json({
+        success: true,
+        dashboard: {
+          teamSize: 0,
+          completedToday: 0,
+          pendingApprovals: 0,
+          ackCompliance: { rate: 0, acknowledged: 0, total: 0, pending: 0 },
+        },
+      });
+    }
+
+    const placeholders = memberIds.map(() => "?").join(",");
+
+    // ── Today's production totals for the whole team ──
+    const [prodRows] = await db.query(
+      `SELECT
+         COALESCE(SUM(docs_completed), 0) AS completed_today
+       FROM daily_entry
+       WHERE user_id IN (${placeholders})
+         AND production_date = CURDATE()`,
+      memberIds
+    );
+
+    // ── Pending correction requests raised by team members ──
+    const [corrRows] = await db.query(
+      `SELECT COUNT(*) AS pending_approvals
+       FROM correction_request cr
+       JOIN correction_status cs ON cs.status_id = cr.status_id
+       WHERE cr.requested_by IN (${placeholders})
+         AND cs.code = 'pending'`,
+      memberIds
+    );
+
+    // ── Guide acknowledgement compliance ──
+    // For every (member, latest-guide-version) pair that requires_ack,
+    // count how many are read vs unread/missing.
+    const [ackRows] = await db.query(
+      `SELECT
+         COUNT(DISTINCT CONCAT(pa.user_id, '-', gv.version_id))          AS total_pairs,
+         COUNT(DISTINCT CASE WHEN ga.status = 'read'
+               THEN CONCAT(pa.user_id, '-', gv.version_id) END)          AS acked_pairs
+       FROM users u
+       JOIN project_assignment pa ON pa.user_id = u.user_id
+       JOIN guide g               ON g.project_id = pa.project_id
+       JOIN guide_version gv      ON gv.guide_id  = g.guide_id
+                                 AND gv.is_latest = 1
+                                 AND gv.requires_ack = 1
+       LEFT JOIN guide_acknowledgement ga
+                                  ON ga.version_id = gv.version_id
+                                 AND ga.user_id    = pa.user_id
+       WHERE u.team_lead_id = ?
+         AND u.status = 'active'`,
       [teamLeadId]
     );
 
-    // Calculates today's received and completed production for the whole team.
-    const [productionResult] = await db.query(
-      `
-      SELECT
-        COALESCE(SUM(de.documents_received), 0) AS receivedToday,
-        COALESCE(SUM(de.documents_completed), 0) AS completedToday
+    const totalPairs  = Number(ackRows[0].total_pairs)  || 0;
+    const ackedPairs  = Number(ackRows[0].acked_pairs)  || 0;
+    const ackRate     = totalPairs > 0 ? Math.round((ackedPairs / totalPairs) * 100) : 100;
 
-      FROM team_members tm
-
-      LEFT JOIN daily_entries de
-        ON de.user_id = tm.member_id
-        AND de.production_date = CURDATE()
-
-      WHERE tm.team_lead_id = ?
-      `,
-      [teamLeadId]
-    );
-
-    // Counts pending correction requests waiting for Team Lead approval.
-    const [approvalResult] = await db.query(
-      `
-      SELECT COUNT(*) AS pendingApprovals
-
-      FROM correction_requests cr
-
-      JOIN team_members tm
-        ON tm.member_id = cr.user_id
-
-      WHERE tm.team_lead_id = ?
-        AND cr.status = 'PENDING'
-      `,
-      [teamLeadId]
-    );
-
-    // Calculates today's attendance status for the Team Lead's team.
-    const [attendanceResult] = await db.query(
-      `
-      SELECT
-
-        COUNT(
-          DISTINCT CASE
-            WHEN EXISTS (
-              SELECT 1
-              FROM leave_requests lr
-              WHERE lr.user_id = tm.member_id
-                AND lr.status = 'APPROVED'
-                AND CURDATE()
-                  BETWEEN lr.start_date AND lr.end_date
-            )
-            THEN tm.member_id
-          END
-        ) AS onLeaveToday,
-
-        COUNT(
-          DISTINCT CASE
-            WHEN a.status = 'Present'
-            AND NOT EXISTS (
-              SELECT 1
-              FROM leave_requests lr
-              WHERE lr.user_id = tm.member_id
-                AND lr.status = 'APPROVED'
-                AND CURDATE()
-                  BETWEEN lr.start_date AND lr.end_date
-            )
-            THEN tm.member_id
-          END
-        ) AS presentToday,
-
-        COUNT(
-          DISTINCT CASE
-            WHEN a.status = 'Training'
-            AND NOT EXISTS (
-              SELECT 1
-              FROM leave_requests lr
-              WHERE lr.user_id = tm.member_id
-                AND lr.status = 'APPROVED'
-                AND CURDATE()
-                  BETWEEN lr.start_date AND lr.end_date
-            )
-            THEN tm.member_id
-          END
-        ) AS trainingToday
-
-      FROM team_members tm
-
-      LEFT JOIN attendance a
-        ON a.user_id = tm.member_id
-        AND a.attendance_date = CURDATE()
-
-      WHERE tm.team_lead_id = ?
-      `,
-      [teamLeadId]
-    );
-
-    // Counts team members who have acknowledged active guides.
-    const [guideResult] = await db.query(
-      `
-      SELECT
-        COUNT(DISTINCT tm.member_id) AS totalMembers,
-
-        COUNT(
-          DISTINCT CASE
-            WHEN ga.id IS NOT NULL
-            THEN tm.member_id
-          END
-        ) AS acknowledgedMembers
-
-      FROM team_members tm
-
-      LEFT JOIN user_project_assignments upa
-        ON upa.user_id = tm.member_id
-
-      LEFT JOIN guides g
-        ON g.project_id = upa.project_id
-        AND g.status = 'active'
-
-      LEFT JOIN guide_acknowledgements ga
-        ON ga.guide_id = g.id
-        AND ga.user_id = tm.member_id
-
-      WHERE tm.team_lead_id = ?
-      `,
-      [teamLeadId]
-    );
-
-    // Converts the team size returned by MySQL into a JavaScript number.
-    const teamSize = Number(teamResult[0].teamSize);
-
-    // Converts today's received count into a JavaScript number.
-    const receivedToday = Number(
-      productionResult[0].receivedToday
-    );
-
-    // Converts today's completed count into a JavaScript number.
-    const completedToday = Number(
-      productionResult[0].completedToday
-    );
-
-    // Converts pending approval count into a JavaScript number.
-    const pendingApprovals = Number(
-      approvalResult[0].pendingApprovals
-    );
-
-    // Converts acknowledged member count into a JavaScript number.
-    const acknowledgedMembers = Number(
-      guideResult[0].acknowledgedMembers
-    );
-
-    // Calculates the guide acknowledgement percentage for the team.
-    const acknowledgementRate =
-      teamSize > 0
-        ? Math.round(
-            (acknowledgedMembers / teamSize) * 100
-          )
-        : 0;
-
-    // Returns all main Team Lead dashboard summary values.
     return res.status(200).json({
       success: true,
-
       dashboard: {
         teamSize,
-
-        receivedToday,
-
-        completedToday,
-
-        pendingToday: Math.max(
-          receivedToday - completedToday,
-          0
-        ),
-
-        completionRate:
-          receivedToday > 0
-            ? Math.round(
-                (completedToday / receivedToday) * 100
-              )
-            : 0,
-
-        pendingApprovals,
-
-        attendance: {
-          present: Number(
-            attendanceResult[0].presentToday
-          ),
-
-          training: Number(
-            attendanceResult[0].trainingToday
-          ),
-
-          onLeave: Number(
-            attendanceResult[0].onLeaveToday
-          ),
-        },
-
-        guideAcknowledgement: {
-          acknowledged: acknowledgedMembers,
-          total: teamSize,
-          rate: acknowledgementRate,
+        completedToday:   Number(prodRows[0].completed_today),
+        pendingApprovals: Number(corrRows[0].pending_approvals),
+        ackCompliance: {
+          rate:         ackRate,
+          acknowledged: ackedPairs,
+          total:        totalPairs,
+          pending:      totalPairs - ackedPairs,
         },
       },
     });
-
-  } catch (error) {
-    // Logs dashboard errors in the backend terminal.
-    console.error(
-      "Team Lead Dashboard Error:",
-      error
-    );
-
-    // Returns an error response when dashboard data cannot be loaded.
-    return res.status(500).json({
-      success: false,
-      message: "Failed to load Team Lead dashboard",
-      error: error.message,
-    });
+  } catch (err) {
+    console.error("Team Lead Dashboard Error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load dashboard", error: err.message });
   }
 };
 
-
-// Gets recent daily production totals for the Team Lead's entire team.
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. TEAM PRODUCTIVITY — last 7 days   GET /api/team-lead/dashboard/productivity
+// ─────────────────────────────────────────────────────────────────────────────
 const getTeamProductivity = async (req, res) => {
   try {
-    // Gets the logged-in Team Lead ID from the JWT token.
     const teamLeadId = req.user.id;
+    const memberIds  = await getTeamMemberIds(teamLeadId);
 
-    // Groups team production by date for the last seven days.
-    const [productivity] = await db.query(
-      `
-      SELECT
-        DATE(de.production_date) AS production_date,
-        DAYNAME(de.production_date) AS day_name,
+    if (memberIds.length === 0) {
+      return res.status(200).json({ success: true, productivity: [] });
+    }
 
-        COALESCE(
-          SUM(de.documents_received),
-          0
-        ) AS received,
+    const placeholders = memberIds.map(() => "?").join(",");
 
-        COALESCE(
-          SUM(de.documents_completed),
-          0
-        ) AS completed
-
-      FROM team_members tm
-
-      JOIN daily_entries de
-        ON de.user_id = tm.member_id
-
-      WHERE tm.team_lead_id = ?
-        AND de.production_date >=
-            DATE_SUB(CURDATE(), INTERVAL 6 DAY)
-
-        AND de.production_date <= CURDATE()
-
-      GROUP BY
-        DATE(de.production_date),
-        DAYNAME(de.production_date)
-
-      ORDER BY
-        DATE(de.production_date) ASC
-      `,
-      [teamLeadId]
+    const [rows] = await db.query(
+      `SELECT
+         grp.prod_date                          AS production_date,
+         DAYNAME(grp.prod_date)                 AS day_name,
+         LEFT(DAYNAME(grp.prod_date), 3)        AS day_short,
+         grp.received,
+         grp.completed
+       FROM (
+         SELECT
+           DATE(production_date)              AS prod_date,
+           COALESCE(SUM(docs_received),  0)   AS received,
+           COALESCE(SUM(docs_completed), 0)   AS completed
+         FROM daily_entry
+         WHERE user_id IN (${placeholders})
+           AND production_date >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+           AND production_date <= CURDATE()
+         GROUP BY DATE(production_date)
+       ) grp
+       ORDER BY grp.prod_date ASC`,
+      memberIds
     );
 
-    // Returns the Team Lead's daily team productivity data.
-    return res.status(200).json({
-      success: true,
-      count: productivity.length,
-      productivity,
-    });
-
-  } catch (error) {
-    // Logs team productivity errors in the backend terminal.
-    console.error(
-      "Team Productivity Error:",
-      error
-    );
-
-    // Returns an error when productivity data cannot be loaded.
-    return res.status(500).json({
-      success: false,
-      message: "Failed to load team productivity",
-      error: error.message,
-    });
+    return res.status(200).json({ success: true, productivity: rows });
+  } catch (err) {
+    console.error("Team Productivity Error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load productivity", error: err.message });
   }
 };
 
-
-// Gets completed and pending production totals for the Team Lead's team.
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. COMPLETION SPLIT (donut)   GET /api/team-lead/dashboard/completion-split
+// ─────────────────────────────────────────────────────────────────────────────
 const getCompletionSplit = async (req, res) => {
   try {
-    // Gets the logged-in Team Lead ID from the JWT token.
     const teamLeadId = req.user.id;
+    const memberIds  = await getTeamMemberIds(teamLeadId);
 
-    // Calculates total received and completed work for all team members.
+    if (memberIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        completionSplit: { received: 0, completed: 0, pending: 0, inReview: 0, completionPct: 0 },
+      });
+    }
+
+    const placeholders = memberIds.map(() => "?").join(",");
+
+    // all-time totals per status
     const [rows] = await db.query(
-      `
-      SELECT
-        COALESCE(
-          SUM(de.documents_received),
-          0
-        ) AS received,
-
-        COALESCE(
-          SUM(de.documents_completed),
-          0
-        ) AS completed
-
-      FROM team_members tm
-
-      JOIN daily_entries de
-        ON de.user_id = tm.member_id
-
-      WHERE tm.team_lead_id = ?
-      `,
-      [teamLeadId]
+      `SELECT
+         COALESCE(SUM(docs_received),  0)                                         AS received,
+         COALESCE(SUM(docs_completed), 0)                                         AS completed,
+         COALESCE(SUM(CASE WHEN es.code IN ('submitted','reviewed')
+                           THEN docs_completed ELSE 0 END), 0)                    AS in_review
+       FROM daily_entry de
+       JOIN entry_status es ON es.status_id = de.status_id
+       WHERE de.user_id IN (${placeholders})`,
+      memberIds
     );
 
-    // Converts received production into a JavaScript number.
-    const received = Number(rows[0].received);
+    const received   = Number(rows[0].received);
+    const completed  = Number(rows[0].completed);
+    const inReview   = Number(rows[0].in_review);
+    const pending    = Math.max(received - completed, 0);
+    const completionPct = received > 0 ? Math.round((completed / received) * 100) : 0;
 
-    // Converts completed production into a JavaScript number.
-    const completed = Number(rows[0].completed);
-
-    // Calculates remaining pending production.
-    const pending = Math.max(
-      received - completed,
-      0
-    );
-
-    // Calculates completed production percentage.
-    const completionPercentage =
-      received > 0
-        ? Math.round(
-            (completed / received) * 100
-          )
-        : 0;
-
-    // Calculates pending production percentage.
-    const pendingPercentage =
-      received > 0
-        ? Math.round(
-            (pending / received) * 100
-          )
-        : 0;
-
-    // Returns completion and pending production values.
     return res.status(200).json({
       success: true,
-
-      completionSplit: {
-        received,
-        completed,
-        pending,
-        completionPercentage,
-        pendingPercentage,
-      },
+      completionSplit: { received, completed, pending, inReview, completionPct },
     });
-
-  } catch (error) {
-    // Logs completion split errors in the backend terminal.
-    console.error(
-      "Completion Split Error:",
-      error
-    );
-
-    // Returns an error when completion split cannot be calculated.
-    return res.status(500).json({
-      success: false,
-      message: "Failed to load completion split",
-      error: error.message,
-    });
+  } catch (err) {
+    console.error("Completion Split Error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load completion split", error: err.message });
   }
 };
 
-
-// Gets team member information displayed on the Team Lead dashboard.
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. TEAM MEMBERS TABLE   GET /api/team-lead/dashboard/team-members
+// ─────────────────────────────────────────────────────────────────────────────
 const getDashboardTeamMembers = async (req, res) => {
   try {
-    // Gets the logged-in Team Lead ID from the JWT token.
     const teamLeadId = req.user.id;
 
-    // Gets team members with projects, production, attendance, and approved leave status.
+    // members with today's production
     const [members] = await db.query(
-      `
-      SELECT
-        u.id,
-        u.employee_id,
-        u.name,
-
-        (
-          SELECT GROUP_CONCAT(
-            DISTINCT p.project_name
-            ORDER BY p.project_name
-            SEPARATOR ', '
-          )
-
-          FROM user_project_assignments upa
-
-          JOIN projects p
-            ON p.id = upa.project_id
-
-          WHERE upa.user_id = u.id
-        ) AS projects,
-
-        (
-          SELECT COALESCE(
-            SUM(de.documents_completed),
-            0
-          )
-
-          FROM daily_entries de
-
-          WHERE de.user_id = u.id
-            AND de.production_date = CURDATE()
-        ) AS completed_today,
-
-        CASE
-
-          WHEN EXISTS (
-            SELECT 1
-
-            FROM leave_requests lr
-
-            WHERE lr.user_id = u.id
-              AND lr.status = 'APPROVED'
-              AND CURDATE()
-                BETWEEN lr.start_date AND lr.end_date
-          )
-          THEN 'LEAVE'
-
-          WHEN EXISTS (
-            SELECT 1
-
-            FROM attendance a
-
-            WHERE a.user_id = u.id
-              AND a.attendance_date = CURDATE()
-          )
-          THEN (
-            SELECT a.status
-
-            FROM attendance a
-
-            WHERE a.user_id = u.id
-              AND a.attendance_date = CURDATE()
-
-            LIMIT 1
-          )
-
-          ELSE 'NOT MARKED'
-
-        END AS attendance_status
-
-      FROM team_members tm
-
-      JOIN users u
-        ON u.id = tm.member_id
-
-      WHERE tm.team_lead_id = ?
-
-      ORDER BY completed_today DESC
-      `,
+      `SELECT
+         u.user_id,
+         u.emp_code,
+         u.full_name,
+         u.designation,
+         COALESCE(SUM(de.docs_completed), 0)                             AS completed_today,
+         COALESCE(SUM(de.docs_received - de.docs_completed), 0)         AS pending_today,
+         (SELECT GROUP_CONCAT(DISTINCT p.project_name ORDER BY p.project_name SEPARATOR ', ')
+          FROM project_assignment pa2
+          JOIN project p ON p.project_id = pa2.project_id AND p.status = 'active'
+          WHERE pa2.user_id = u.user_id)                                  AS projects
+       FROM users u
+       LEFT JOIN daily_entry de
+         ON de.user_id = u.user_id
+        AND de.production_date = CURDATE()
+       WHERE u.team_lead_id = ?
+         AND u.status = 'active'
+       GROUP BY u.user_id, u.emp_code, u.full_name, u.designation
+       ORDER BY completed_today DESC`,
       [teamLeadId]
     );
 
-    // Returns team member information for the dashboard.
-    return res.status(200).json({
-      success: true,
-      count: members.length,
-      members,
-    });
+    if (members.length === 0) {
+      return res.status(200).json({ success: true, members: [] });
+    }
 
-  } catch (error) {
-    // Logs Team Member dashboard errors in the backend terminal.
-    console.error(
-      "Dashboard Team Members Error:",
-      error
+    const memberIds    = members.map((m) => m.user_id);
+    const placeholders = memberIds.map(() => "?").join(",");
+
+    // attendance today
+    const [attRows] = await db.query(
+      `SELECT a.user_id, ats.code AS att_code
+       FROM attendance a
+       JOIN attendance_status ats ON ats.status_id = a.status_id
+       WHERE a.user_id IN (${placeholders})
+         AND a.att_date = CURDATE()`,
+      memberIds
     );
+    const attMap = {};
+    attRows.forEach((r) => { attMap[r.user_id] = r.att_code; });
 
-    // Returns an error when team member data cannot be loaded.
-    return res.status(500).json({
-      success: false,
-      message: "Failed to load dashboard team members",
-      error: error.message,
+    // guide acknowledgement per member — any pending unread
+    const [guideRows] = await db.query(
+      `SELECT pa.user_id,
+              SUM(CASE WHEN ga.status = 'unread' OR ga.ack_id IS NULL THEN 1 ELSE 0 END) AS pending_acks
+       FROM project_assignment pa
+       JOIN guide g          ON g.project_id  = pa.project_id
+       JOIN guide_version gv ON gv.guide_id   = g.guide_id
+                            AND gv.is_latest = 1
+                            AND gv.requires_ack = 1
+       LEFT JOIN guide_acknowledgement ga
+                            ON ga.version_id = gv.version_id
+                           AND ga.user_id    = pa.user_id
+       WHERE pa.user_id IN (${placeholders})
+       GROUP BY pa.user_id`,
+      memberIds
+    );
+    const guideMap = {};
+    guideRows.forEach((r) => { guideMap[r.user_id] = Number(r.pending_acks); });
+
+    // Assign initials colour consistently
+    const COLOURS = ["#4f73e3","#3aab8e","#5b5ce2","#e05a3a","#7c4dbd","#d97706","#0891b2"];
+
+    const result = members.map((m, idx) => {
+      const attCode    = attMap[m.user_id] || "not_marked";
+      const pendingAck = guideMap[m.user_id] ?? 0;
+      const nameParts  = m.full_name.trim().split(" ");
+      const initials   = nameParts.length >= 2
+        ? nameParts[0][0] + nameParts[nameParts.length - 1][0]
+        : m.full_name.substring(0, 2).toUpperCase();
+
+      // map attendance_status.code → display label
+      const statusLabel =
+        attCode === "present"       ? "PRESENT"  :
+        attCode === "absent"        ? "ABSENT"   :
+        attCode === "planned_leave" ? "LEAVE"    :
+        attCode === "sick_leave"    ? "LEAVE"    :
+        attCode === "training"      ? "TRAINING" :
+        attCode === "holiday"       ? "HOLIDAY"  : "NOT MARKED";
+
+      return {
+        userId:        m.user_id,
+        empCode:       m.emp_code,
+        name:          m.full_name,
+        initials:      initials.toUpperCase(),
+        avatarColor:   COLOURS[idx % COLOURS.length],
+        designation:   m.designation || "",
+        project:       m.projects    || "—",
+        completedToday: Number(m.completed_today),
+        pendingToday:   Number(m.pending_today),
+        guideAck:      pendingAck === 0 ? "DONE" : "PENDING",
+        status:        statusLabel,
+      };
     });
+
+    return res.status(200).json({ success: true, members: result });
+  } catch (err) {
+    console.error("Dashboard Team Members Error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load team members", error: err.message });
   }
 };
 
-
-// Gets team availability while considering approved leave.
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. TEAM AVAILABILITY   GET /api/team-lead/availability
+// ─────────────────────────────────────────────────────────────────────────────
 const getTeamAvailability = async (req, res) => {
   try {
-    // Gets the logged-in Team Lead ID from the JWT token.
     const teamLeadId = req.user.id;
+    const memberIds  = await getTeamMemberIds(teamLeadId);
 
-    // Checks whether each employee is available or currently on approved leave.
-    const [members] = await db.query(
-      `
-      SELECT
-        u.id,
-        u.employee_id,
-        u.name,
+    if (memberIds.length === 0) {
+      return res.status(200).json({ success: true, summary: { totalMembers: 0, availableMembers: 0, onLeave: 0 }, members: [] });
+    }
 
-        CASE
+    const placeholders = memberIds.map(() => "?").join(",");
 
-          WHEN EXISTS (
-            SELECT 1
-
-            FROM leave_requests lr
-
-            WHERE lr.user_id = u.id
-              AND lr.status = 'APPROVED'
-              AND CURDATE()
-                BETWEEN lr.start_date AND lr.end_date
-          )
-          THEN 'ON_LEAVE'
-
-          ELSE 'AVAILABLE'
-
-        END AS availability_status
-
-      FROM team_members tm
-
-      JOIN users u
-        ON u.id = tm.member_id
-
-      WHERE tm.team_lead_id = ?
-
-      ORDER BY u.name ASC
-      `,
-      [teamLeadId]
+    const [rows] = await db.query(
+      `SELECT
+         u.user_id, u.full_name,
+         COALESCE(ats.code, 'not_marked') AS att_code
+       FROM users u
+       LEFT JOIN attendance a   ON a.user_id   = u.user_id AND a.att_date = CURDATE()
+       LEFT JOIN attendance_status ats ON ats.status_id = a.status_id
+       WHERE u.user_id IN (${placeholders})`,
+      memberIds
     );
 
-    // Counts the total employees belonging to this Team Lead.
-    const totalMembers = members.length;
-
-    // Counts how many employees are currently on approved leave.
-    const onLeave = members.filter(
-      (member) =>
-        member.availability_status === "ON_LEAVE"
+    const onLeave = rows.filter((r) =>
+      ["planned_leave","sick_leave"].includes(r.att_code)
     ).length;
 
-    // Calculates how many employees are available for productivity today.
-    const availableMembers =
-      totalMembers - onLeave;
+    const members = rows.map((r) => ({
+      userId: r.user_id,
+      name:   r.full_name,
+      availabilityStatus: ["planned_leave","sick_leave"].includes(r.att_code) ? "ON_LEAVE" : "AVAILABLE",
+    }));
 
-    // Returns the team's current availability summary and individual statuses.
     return res.status(200).json({
       success: true,
-
-      summary: {
-        totalMembers,
-        availableMembers,
-        onLeave,
-      },
-
+      summary: { totalMembers: rows.length, availableMembers: rows.length - onLeave, onLeave },
       members,
     });
-
-  } catch (error) {
-    // Logs team availability errors in the backend terminal.
-    console.error(
-      "Team Availability Error:",
-      error
-    );
-
-    // Returns an error when team availability cannot be loaded.
-    return res.status(500).json({
-      success: false,
-      message: "Failed to load team availability",
-      error: error.message,
-    });
+  } catch (err) {
+    console.error("Team Availability Error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load team availability", error: err.message });
   }
 };
 
-// Calculates today's team productivity based only on employees available for work.
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. AVAILABILITY PRODUCTIVITY   GET /api/team-lead/dashboard/availability-productivity
+// ─────────────────────────────────────────────────────────────────────────────
 const getAvailabilityProductivity = async (req, res) => {
   try {
-    // Gets the logged-in Team Lead ID from the JWT token.
     const teamLeadId = req.user.id;
+    const memberIds  = await getTeamMemberIds(teamLeadId);
+    const totalMembers = memberIds.length;
 
-    // Counts all employees belonging to this Team Lead.
-    const [teamRows] = await db.query(
-      `
-      SELECT COUNT(*) AS totalMembers
-      FROM team_members
-      WHERE team_lead_id = ?
-      `,
-      [teamLeadId]
-    );
+    if (totalMembers === 0) {
+      return res.status(200).json({
+        success: true,
+        productivity: { totalMembers: 0, availableMembers: 0, onLeave: 0, receivedToday: 0, completedToday: 0, completionRate: 0, averagePerAvailableMember: 0 },
+      });
+    }
 
-    // Counts employees whose approved leave includes today's date.
+    const placeholders = memberIds.map(() => "?").join(",");
+
     const [leaveRows] = await db.query(
-      `
-      SELECT COUNT(DISTINCT tm.member_id) AS onLeave
-
-      FROM team_members tm
-
-      JOIN leave_requests lr
-        ON lr.user_id = tm.member_id
-
-      WHERE tm.team_lead_id = ?
-        AND lr.status = 'APPROVED'
-        AND CURDATE() BETWEEN lr.start_date AND lr.end_date
-      `,
-      [teamLeadId]
+      `SELECT COUNT(DISTINCT a.user_id) AS on_leave
+       FROM attendance a
+       JOIN attendance_status ats ON ats.status_id = a.status_id
+       WHERE a.user_id IN (${placeholders})
+         AND a.att_date = CURDATE()
+         AND ats.code IN ('planned_leave','sick_leave')`,
+      memberIds
     );
 
-    // Calculates today's actual production completed by the whole team.
-    const [productionRows] = await db.query(
-      `
-      SELECT
-        COALESCE(SUM(de.documents_received), 0) AS receivedToday,
-        COALESCE(SUM(de.documents_completed), 0) AS completedToday
-
-      FROM team_members tm
-
-      LEFT JOIN daily_entries de
-        ON de.user_id = tm.member_id
-        AND DATE(de.production_date) = CURDATE()
-
-      WHERE tm.team_lead_id = ?
-      `,
-      [teamLeadId]
+    const [prodRows] = await db.query(
+      `SELECT
+         COALESCE(SUM(docs_received),  0) AS received_today,
+         COALESCE(SUM(docs_completed), 0) AS completed_today
+       FROM daily_entry
+       WHERE user_id IN (${placeholders})
+         AND production_date = CURDATE()`,
+      memberIds
     );
 
-    // Converts the total team-member count from MySQL into a JavaScript number.
-    const totalMembers = Number(teamRows[0].totalMembers);
-
-    // Converts the approved-leave count from MySQL into a JavaScript number.
-    const onLeave = Number(leaveRows[0].onLeave);
-
-    // Calculates employees who are expected to be available today.
+    const onLeave          = Number(leaveRows[0].on_leave);
     const availableMembers = Math.max(totalMembers - onLeave, 0);
+    const receivedToday    = Number(prodRows[0].received_today);
+    const completedToday   = Number(prodRows[0].completed_today);
+    const completionRate   = receivedToday > 0 ? Math.round((completedToday / receivedToday) * 100) : 0;
+    const avgPerMember     = availableMembers > 0 ? Math.round(completedToday / availableMembers) : 0;
 
-    // Converts today's received production into a JavaScript number.
-    const receivedToday = Number(productionRows[0].receivedToday);
-
-    // Converts today's completed production into a JavaScript number.
-    const completedToday = Number(productionRows[0].completedToday);
-
-    // Calculates average completed production only across available employees.
-    const averagePerAvailableMember =
-      availableMembers > 0
-        ? Math.round(completedToday / availableMembers)
-        : 0;
-
-    // Calculates today's overall completion percentage from actual production.
-    const completionRate =
-      receivedToday > 0
-        ? Math.round((completedToday / receivedToday) * 100)
-        : 0;
-
-    // Returns actual productivity together with leave-adjusted team availability.
     return res.status(200).json({
       success: true,
-
-      productivity: {
-        totalMembers,
-        availableMembers,
-        onLeave,
-        receivedToday,
-        completedToday,
-        completionRate,
-        averagePerAvailableMember,
-      },
+      productivity: { totalMembers, availableMembers, onLeave, receivedToday, completedToday, completionRate, averagePerAvailableMember: avgPerMember },
     });
-  } catch (error) {
-    // Logs productivity calculation errors in the backend terminal.
-    console.error("Availability Productivity Error:", error);
-
-    // Returns an error when leave-adjusted productivity cannot be calculated.
-    return res.status(500).json({
-      success: false,
-      message: "Failed to calculate availability productivity",
-      error: error.message,
-    });
+  } catch (err) {
+    console.error("Availability Productivity Error:", err);
+    return res.status(500).json({ success: false, message: "Failed to calculate availability productivity", error: err.message });
   }
 };
 
-// Exports all Team Lead dashboard functions so the routes can use them.
 module.exports = {
   getTeamLeadDashboard,
   getTeamProductivity,
