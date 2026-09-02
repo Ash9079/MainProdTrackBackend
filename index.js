@@ -50,6 +50,13 @@ const coreTeamAssignmentMatrixRoutes = require("./routes/coreTeam/assignmentMatr
 const indexerCorrectionRoutes = require(
   "./routes/indexer/correctionRoutes"
 );
+const complianceRoutes = require(
+  "./routes/complianceRoutes"
+);
+
+const auditLogRoutes = require(
+  "./routes/auditLogRoutes"
+);
 
 
 
@@ -147,6 +154,16 @@ app.use("/api/core-team", coreTeamAssignmentMatrixRoutes);
 app.use(
   "/api/indexer/corrections",
   indexerCorrectionRoutes
+);
+
+app.use(
+  "/api/compliance",
+  complianceRoutes
+);
+
+app.use(
+  "/api/audit-logs",
+  auditLogRoutes
 );
 // ============================================
 // SERVER
