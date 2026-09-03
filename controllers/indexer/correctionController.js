@@ -233,7 +233,58 @@ const getMyCorrectionRequests = async (req, res) => {
   }
 };
 
+// ======================================================
+// GET LOCKED ENTRIES
+// Returns the logged-in Indexer's locked daily entries
+// so the correction form can populate the Project and
+// Production Date dropdowns.
+// ======================================================
+
+const getLockedEntries = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const [entries] = await db.query(
+      `
+      SELECT
+        de.entry_id,
+        p.project_id,
+        p.project_name,
+        DATE_FORMAT(de.production_date, '%Y-%m-%d') AS production_date
+
+      FROM daily_entry de
+
+      JOIN entry_status es
+        ON es.status_id = de.status_id
+
+      JOIN project p
+        ON p.project_id = de.project_id
+
+      WHERE de.user_id = ?
+        AND es.code    = 'locked'
+
+      ORDER BY de.production_date DESC, de.entry_id DESC
+      `,
+      [userId]
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: entries.length,
+      entries,
+    });
+  } catch (error) {
+    console.error("Get Locked Entries Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load locked entries",
+    });
+  }
+};
+
 module.exports = {
   createCorrectionRequest,
   getMyCorrectionRequests,
+  getLockedEntries,
 };
