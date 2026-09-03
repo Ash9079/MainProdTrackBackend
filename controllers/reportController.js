@@ -1,5 +1,23 @@
 const db = require("../config/db");
 
+const calculateProductivity = ({
+  received,
+  completed,
+}) => {
+  const totalReceived =
+    Number(received || 0);
+
+  const totalCompleted =
+    Number(completed || 0);
+
+  return totalReceived > 0
+    ? Math.round(
+        (totalCompleted / totalReceived) *
+          100
+      )
+    : 0;
+};
+
 const getMyReportSummary = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -713,10 +731,22 @@ const getEmployeeProduction = async (req, res) => {
       queryValues
     );
 
+    const employeesWithProductivity =
+      employees.map((employee) => ({
+        ...employee,
+        productivity:
+          calculateProductivity({
+            received: employee.received,
+            completed: employee.completed,
+          }),
+      }));
+
     return res.status(200).json({
       success: true,
-      count: employees.length,
-      employees,
+      count:
+        employeesWithProductivity.length,
+      employees:
+        employeesWithProductivity,
     });
   } catch (error) {
     console.error(

@@ -2,6 +2,10 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const db = require("../config/db");
 
+const {
+  getAppSetting,
+} = require("../utils/appSettings");
+
 const roleKeyMap = {
   indexer: "indexer",
   lead: "teamLead",
@@ -105,30 +109,31 @@ const login = async (req, res) => {
       });
     }
 
-    const [users] = await db.query(
-      `
-      SELECT
-        u.user_id,
-        u.emp_code,
-        u.full_name,
-        u.username,
-        u.email,
-        u.password_hash,
-        u.designation,
-        u.status,
-        d.name AS department,
-        r.code AS role_code,
-        r.name AS role_name
-      FROM users u
-      JOIN role r
-        ON r.role_id = u.role_id
-      LEFT JOIN department d
-        ON d.department_id = u.department_id
-      WHERE u.email = ? OR u.username = ?
-      LIMIT 1
-      `,
-      [email, email]
-    );
+      const [users] = await db.query(
+        `
+        SELECT
+          u.user_id,
+          u.emp_code,
+          u.full_name,
+          u.username,
+          u.email,
+          u.password_hash,
+          u.designation,
+          u.status,
+          d.name AS department,
+          r.code AS role_code,
+          r.name AS role_name,
+          u.auth_method
+        FROM users u
+        JOIN role r
+          ON r.role_id = u.role_id
+        LEFT JOIN department d
+          ON d.department_id = u.department_id
+        WHERE u.email = ? OR u.username = ?
+        LIMIT 1
+        `,
+        [email, email]
+      );
 
     
 
@@ -159,6 +164,38 @@ const login = async (req, res) => {
         message: "Your account is inactive",
       });
     }
+
+    const globalAuthMethod =
+  await getAppSetting(
+    "auth_method",
+    "both"
+  );
+
+const userAuthMethod =
+  user.auth_method || "both";
+
+const passwordLoginAllowed =
+  ["password", "both"].includes(
+    globalAuthMethod
+  ) &&
+  ["password", "both"].includes(
+    userAuthMethod
+  );
+
+if (!passwordLoginAllowed) {
+  await recordLoginEvent({
+    req,
+    userId: user.user_id,
+    usernameTried: email,
+    success: false,
+  });
+
+  return res.status(403).json({
+    success: false,
+    message:
+      "Password login is disabled. Please use Microsoft SSO.",
+  });
+}
 
     const passwordMatches = await bcrypt.compare(
       password,

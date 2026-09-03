@@ -2,15 +2,60 @@ const db = require("../config/db");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 
+const {
+  getAppSetting,
+} = require("../utils/appSettings");
+
+const getPasswordResetMode =
+  async () => {
+    const [rows] = await db.query(
+      `
+      SELECT setting_value
+      FROM app_setting
+      WHERE setting_key = 'password_reset'
+      LIMIT 1
+      `
+    );
+
+    return (
+      rows[0]?.setting_value ||
+      "self_service"
+    );
+  };
 // ======================================================
 // REQUEST PASSWORD RESET
 // Inserts a row in password_reset table
 // POST /api/password/request-reset
 // ======================================================
 const requestPasswordReset = async (req, res) => {
+  const resetMode =
+  await getAppSetting(
+    "password_reset",
+    "self_service"
+  );
+
+if (resetMode !== "self_service") {
+  return res.status(403).json({
+    success: false,
+    message:
+      "Self-service password reset is disabled. Contact an administrator.",
+  });
+}
   try {
     const userId = req.user.id;
 
+    const passwordResetMode =
+    await getPasswordResetMode();
+
+    if (
+      passwordResetMode !== "self_service"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Self-service password reset is disabled. Contact an administrator.",
+      });
+    }
     // Check user exists and is active
     const [users] = await db.query(
       `SELECT user_id, email, full_name
@@ -70,6 +115,19 @@ const requestPasswordReset = async (req, res) => {
 // POST /api/password/reset-with-token
 // ======================================================
 const changePasswordWithToken = async (req, res) => {
+  const resetMode =
+  await getAppSetting(
+    "password_reset",
+    "self_service"
+  );
+
+if (resetMode !== "self_service") {
+  return res.status(403).json({
+    success: false,
+    message:
+      "Self-service password reset is disabled.",
+  });
+}
   try {
     const userId = req.user.id;
     const { resetToken, newPassword, confirmPassword } = req.body;
