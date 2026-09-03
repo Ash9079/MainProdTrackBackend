@@ -14,7 +14,9 @@ const {
   updateProject,
   getTeamLeads,
   getReportingCategories,
+  getProjectFields,
 } = require("../controllers/projectMasterController");
+
 
 // Creates an Express router for Core Team Project Master APIs.
 const router = express.Router();
@@ -46,6 +48,14 @@ router.post(
   createProject
 );
 
+// Gets the dynamic Daily Entry fields configured for a selected project.
+router.get(
+  "/projects/:id/fields",
+  authenticate,
+  allowRoles("coreTeam", "administrator"),
+  getProjectFields
+);
+
 
 // Updates an existing Project Master record.
 router.patch(
@@ -61,6 +71,7 @@ router.get(
   allowRoles("coreTeam", "administrator"),
   getReportingCategories
 );
+
 
 // Exports the Project Master router so index.js can register it.
 module.exports = router;

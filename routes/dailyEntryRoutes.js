@@ -9,6 +9,7 @@ const {
   updateEntry,
   getPendingTeamEntries,
   reviewEntry,
+  getProjectFields,
 } = require("../controllers/dailyEntryController");
 
 const router = express.Router();
@@ -32,6 +33,14 @@ router.post(
   authenticate,
   allowRoles("indexer","teamLead"),
   createEntry
+);
+
+// Loads dynamic Daily Entry fields for a project assigned to the logged-in user.
+router.get(
+  "/projects/:projectId/fields",
+  authenticate,
+  allowRoles("indexer", "teamLead"),
+  getProjectFields
 );
 
 router.patch(

@@ -837,6 +837,115 @@ const updateProject = async (req, res) => {
   }
 };
 
+// ============================================================
+// 6. GET PROJECT FIELDS
+// ============================================================
+
+// Gets all dynamic Daily Entry fields configured for one project.
+const getProjectFields = async (req, res) => {
+  try {
+    // Converts the project ID from the URL into a number.
+    const projectId = Number(req.params.id);
+
+    // Rejects an invalid project ID before querying the database.
+    if (!Number.isInteger(projectId) || projectId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid project ID",
+      });
+    }
+
+    // Checks whether the requested project exists.
+    const [projectRows] = await db.query(
+      `
+      SELECT
+        project_id,
+        project_code,
+        project_name
+
+      FROM project
+
+      WHERE project_id = ?
+
+      LIMIT 1
+      `,
+      [projectId]
+    );
+
+    // Returns 404 when the requested project does not exist.
+    if (projectRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
+    }
+
+    // Loads the dynamic fields configured for the selected project.
+    const [fields] = await db.query(
+      `
+      SELECT
+        field_id AS id,
+        project_id,
+        field_key,
+        label,
+        data_type,
+        is_mandatory,
+        sort_order
+
+      FROM project_field
+
+      WHERE project_id = ?
+
+      ORDER BY
+        sort_order ASC,
+        field_id ASC
+      `,
+      [projectId]
+    );
+
+    // Converts MySQL numeric values into normal JavaScript values.
+    const formattedFields = fields.map((field) => ({
+      id: field.id,
+      project_id: field.project_id,
+      field_key: field.field_key,
+      label: field.label,
+      data_type: field.data_type,
+
+      // Converts MySQL TINYINT 0/1 into a frontend-friendly boolean.
+      is_mandatory: Boolean(field.is_mandatory),
+
+      sort_order: Number(field.sort_order),
+    }));
+
+    // Returns the project and its configured dynamic fields.
+    return res.status(200).json({
+      success: true,
+
+      project: {
+        id: projectRows[0].project_id,
+        project_code: projectRows[0].project_code,
+        project_name: projectRows[0].project_name,
+      },
+
+      count: formattedFields.length,
+      fields: formattedFields,
+    });
+  } catch (error) {
+    // Logs the complete error in the backend terminal for debugging.
+    console.error(
+      "Get Project Fields Error:",
+      error
+    );
+
+    // Returns a safe API error response.
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load project fields",
+      error: error.message,
+    });
+  }
+};
+
 
 // ============================================================
 // EXPORTS
@@ -849,4 +958,5 @@ module.exports = {
   updateProject,
   getTeamLeads,
   getReportingCategories,
+  getProjectFields,
 };
