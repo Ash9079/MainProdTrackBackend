@@ -1,14 +1,35 @@
 const db = require("../config/db");
 
 const calculateProductivity = ({
+  baseMetric,
   received,
   completed,
+  batchesProcessed,
+  availableHours,
 }) => {
-  const totalReceived =
-    Number(received || 0);
+  if (baseMetric === "batches_processed") {
+    const batches = Number(
+      batchesProcessed || 0
+    );
 
-  const totalCompleted =
-    Number(completed || 0);
+    const hours = Number(
+      availableHours || 0
+    );
+
+    return hours > 0
+      ? Number(
+          (batches / hours).toFixed(2)
+        )
+      : 0;
+  }
+
+  const totalReceived = Number(
+    received || 0
+  );
+
+  const totalCompleted = Number(
+    completed || 0
+  );
 
   return totalReceived > 0
     ? Math.round(
@@ -18,7 +39,14 @@ const calculateProductivity = ({
     : 0;
 };
 
-const getMyReportSummary = async (req, res) => {
+// ======================================================
+// REPORT SUMMARY
+// ======================================================
+
+const getMyReportSummary = async (
+  req,
+  res
+) => {
   try {
     const userId = req.user.id;
     const role = req.user.role;
@@ -28,22 +56,28 @@ const getMyReportSummary = async (req, res) => {
         ? "month"
         : "week";
 
-    const rawProjectId = req.query.projectId;
-    const rawEmployeeId = req.query.employeeId;
+    const rawProjectId =
+      req.query.projectId;
+
+    const rawEmployeeId =
+      req.query.employeeId;
 
     const projectId =
-      rawProjectId && rawProjectId !== "all"
+      rawProjectId &&
+      rawProjectId !== "all"
         ? Number(rawProjectId)
         : null;
 
     const employeeId =
-      rawEmployeeId && rawEmployeeId !== "all"
+      rawEmployeeId &&
+      rawEmployeeId !== "all"
         ? Number(rawEmployeeId)
         : null;
 
     if (
       projectId !== null &&
-      (!Number.isInteger(projectId) || projectId <= 0)
+      (!Number.isInteger(projectId) ||
+        projectId <= 0)
     ) {
       return res.status(400).json({
         success: false,
@@ -53,7 +87,8 @@ const getMyReportSummary = async (req, res) => {
 
     if (
       employeeId !== null &&
-      (!Number.isInteger(employeeId) || employeeId <= 0)
+      (!Number.isInteger(employeeId) ||
+        employeeId <= 0)
     ) {
       return res.status(400).json({
         success: false,
@@ -66,7 +101,10 @@ const getMyReportSummary = async (req, res) => {
 
     let rows;
 
+    // =========================
     // INDEXER
+    // =========================
+
     if (role === "indexer") {
       const conditions = [
         "de.user_id = ?",
@@ -76,7 +114,10 @@ const getMyReportSummary = async (req, res) => {
       const queryValues = [userId];
 
       if (projectId !== null) {
-        conditions.push("de.project_id = ?");
+        conditions.push(
+          "de.project_id = ?"
+        );
+
         queryValues.push(projectId);
       }
 
@@ -95,13 +136,18 @@ const getMyReportSummary = async (req, res) => {
 
         FROM daily_entry de
 
-        WHERE ${conditions.join(" AND ")}
+        WHERE ${conditions.join(
+          " AND "
+        )}
         `,
         queryValues
       );
     }
 
+    // =========================
     // TEAM LEAD
+    // =========================
+
     else if (role === "teamLead") {
       const conditions = [
         "u.team_lead_id = ?",
@@ -112,12 +158,18 @@ const getMyReportSummary = async (req, res) => {
       const queryValues = [userId];
 
       if (projectId !== null) {
-        conditions.push("de.project_id = ?");
+        conditions.push(
+          "de.project_id = ?"
+        );
+
         queryValues.push(projectId);
       }
 
       if (employeeId !== null) {
-        conditions.push("u.user_id = ?");
+        conditions.push(
+          "u.user_id = ?"
+        );
+
         queryValues.push(employeeId);
       }
 
@@ -139,61 +191,74 @@ const getMyReportSummary = async (req, res) => {
         JOIN daily_entry de
           ON de.user_id = u.user_id
 
-        WHERE ${conditions.join(" AND ")}
+        WHERE ${conditions.join(
+          " AND "
+        )}
         `,
         queryValues
       );
     }
 
-    // CORE TEAM AND ADMINISTRATOR
-else if (
-  role === "coreTeam" ||
-  role === "administrator"
-) {
-  const conditions = [
-    "u.status = 'active'",
-    "r.code = 'indexer'",
-    dateCondition,
-  ];
+    // =========================
+    // CORE TEAM / ADMINISTRATOR
+    // =========================
 
-  const queryValues = [];
+    else if (
+      role === "coreTeam" ||
+      role === "administrator"
+    ) {
+      const conditions = [
+        "u.status = 'active'",
+        "r.code = 'indexer'",
+        dateCondition,
+      ];
 
-  if (projectId !== null) {
-    conditions.push("de.project_id = ?");
-    queryValues.push(projectId);
-  }
+      const queryValues = [];
 
-  if (employeeId !== null) {
-    conditions.push("u.user_id = ?");
-    queryValues.push(employeeId);
-  }
+      if (projectId !== null) {
+        conditions.push(
+          "de.project_id = ?"
+        );
 
-  [rows] = await db.query(
-    `
-    SELECT
-      COALESCE(
-        SUM(de.docs_received),
-        0
-      ) AS totalReceived,
+        queryValues.push(projectId);
+      }
 
-      COALESCE(
-        SUM(de.docs_completed),
-        0
-      ) AS totalCompleted
+      if (employeeId !== null) {
+        conditions.push(
+          "u.user_id = ?"
+        );
 
-    FROM users u
+        queryValues.push(employeeId);
+      }
 
-    JOIN role r
-      ON r.role_id = u.role_id
+      [rows] = await db.query(
+        `
+        SELECT
+          COALESCE(
+            SUM(de.docs_received),
+            0
+          ) AS totalReceived,
 
-    JOIN daily_entry de
-      ON de.user_id = u.user_id
+          COALESCE(
+            SUM(de.docs_completed),
+            0
+          ) AS totalCompleted
 
-    WHERE ${conditions.join(" AND ")}
-    `,
-    queryValues
-  );
-}
+        FROM users u
+
+        JOIN role r
+          ON r.role_id = u.role_id
+
+        JOIN daily_entry de
+          ON de.user_id = u.user_id
+
+        WHERE ${conditions.join(
+          " AND "
+        )}
+        `,
+        queryValues
+      );
+    }
 
     else {
       return res.status(403).json({
@@ -203,11 +268,13 @@ else if (
       });
     }
 
-    const totalReceived =
-      Number(rows[0]?.totalReceived || 0);
+    const totalReceived = Number(
+      rows[0]?.totalReceived || 0
+    );
 
-    const totalCompleted =
-      Number(rows[0]?.totalCompleted || 0);
+    const totalCompleted = Number(
+      rows[0]?.totalCompleted || 0
+    );
 
     const totalPending = Math.max(
       totalReceived - totalCompleted,
@@ -217,7 +284,10 @@ else if (
     const completionRate =
       totalReceived > 0
         ? Math.round(
-            (totalCompleted / totalReceived) * 100
+            (
+              totalCompleted /
+              totalReceived
+            ) * 100
           )
         : 0;
 
@@ -231,28 +301,28 @@ else if (
       },
     });
   } catch (error) {
-    console.error("Report Summary Error:", error);
+    console.error(
+      "Report Summary Error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Failed to load report summary",
+      message:
+        "Failed to load report summary",
       error: error.message,
     });
   }
 };
 
-
 // ======================================================
 // DAILY PRODUCTION REPORT
-//
-// Indexer:
-//   Groups logged-in Indexer's production by date.
-//
-// Team Lead:
-//   Groups production of the entire team by date.
 // ======================================================
 
-const getMyDailyProduction = async (req, res) => {
+const getMyDailyProduction = async (
+  req,
+  res
+) => {
   try {
     const userId = req.user.id;
     const role = req.user.role;
@@ -262,22 +332,28 @@ const getMyDailyProduction = async (req, res) => {
         ? "month"
         : "week";
 
-    const rawProjectId = req.query.projectId;
-    const rawEmployeeId = req.query.employeeId;
+    const rawProjectId =
+      req.query.projectId;
+
+    const rawEmployeeId =
+      req.query.employeeId;
 
     const projectId =
-      rawProjectId && rawProjectId !== "all"
+      rawProjectId &&
+      rawProjectId !== "all"
         ? Number(rawProjectId)
         : null;
 
     const employeeId =
-      rawEmployeeId && rawEmployeeId !== "all"
+      rawEmployeeId &&
+      rawEmployeeId !== "all"
         ? Number(rawEmployeeId)
         : null;
 
     if (
       projectId !== null &&
-      (!Number.isInteger(projectId) || projectId <= 0)
+      (!Number.isInteger(projectId) ||
+        projectId <= 0)
     ) {
       return res.status(400).json({
         success: false,
@@ -287,7 +363,8 @@ const getMyDailyProduction = async (req, res) => {
 
     if (
       employeeId !== null &&
-      (!Number.isInteger(employeeId) || employeeId <= 0)
+      (!Number.isInteger(employeeId) ||
+        employeeId <= 0)
     ) {
       return res.status(400).json({
         success: false,
@@ -300,7 +377,10 @@ const getMyDailyProduction = async (req, res) => {
 
     let production;
 
+    // =========================
     // INDEXER
+    // =========================
+
     if (role === "indexer") {
       const conditions = [
         "de.user_id = ?",
@@ -310,7 +390,10 @@ const getMyDailyProduction = async (req, res) => {
       const queryValues = [userId];
 
       if (projectId !== null) {
-        conditions.push("de.project_id = ?");
+        conditions.push(
+          "de.project_id = ?"
+        );
+
         queryValues.push(projectId);
       }
 
@@ -322,7 +405,9 @@ const getMyDailyProduction = async (req, res) => {
             '%Y-%m-%d'
           ) AS production_date,
 
-          DAYNAME(de.production_date) AS day_name,
+          DAYNAME(
+            de.production_date
+          ) AS day_name,
 
           COALESCE(
             SUM(de.docs_received),
@@ -336,19 +421,25 @@ const getMyDailyProduction = async (req, res) => {
 
         FROM daily_entry de
 
-        WHERE ${conditions.join(" AND ")}
+        WHERE ${conditions.join(
+          " AND "
+        )}
 
         GROUP BY
           de.production_date,
           DAYNAME(de.production_date)
 
-        ORDER BY de.production_date ASC
+        ORDER BY
+          de.production_date ASC
         `,
         queryValues
       );
     }
 
+    // =========================
     // TEAM LEAD
+    // =========================
+
     else if (role === "teamLead") {
       const conditions = [
         "u.team_lead_id = ?",
@@ -359,12 +450,18 @@ const getMyDailyProduction = async (req, res) => {
       const queryValues = [userId];
 
       if (projectId !== null) {
-        conditions.push("de.project_id = ?");
+        conditions.push(
+          "de.project_id = ?"
+        );
+
         queryValues.push(projectId);
       }
 
       if (employeeId !== null) {
-        conditions.push("u.user_id = ?");
+        conditions.push(
+          "u.user_id = ?"
+        );
+
         queryValues.push(employeeId);
       }
 
@@ -376,7 +473,9 @@ const getMyDailyProduction = async (req, res) => {
             '%Y-%m-%d'
           ) AS production_date,
 
-          DAYNAME(de.production_date) AS day_name,
+          DAYNAME(
+            de.production_date
+          ) AS day_name,
 
           COALESCE(
             SUM(de.docs_received),
@@ -393,82 +492,97 @@ const getMyDailyProduction = async (req, res) => {
         JOIN daily_entry de
           ON de.user_id = u.user_id
 
-        WHERE ${conditions.join(" AND ")}
+        WHERE ${conditions.join(
+          " AND "
+        )}
 
         GROUP BY
           de.production_date,
           DAYNAME(de.production_date)
 
-        ORDER BY de.production_date ASC
+        ORDER BY
+          de.production_date ASC
         `,
         queryValues
       );
     }
 
-    // CORE TEAM AND ADMINISTRATOR
-else if (
-  role === "coreTeam" ||
-  role === "administrator"
-) {
-  const conditions = [
-    "u.status = 'active'",
-    "r.code = 'indexer'",
-    dateCondition,
-  ];
+    // =========================
+    // CORE TEAM / ADMINISTRATOR
+    // =========================
 
-  const queryValues = [];
+    else if (
+      role === "coreTeam" ||
+      role === "administrator"
+    ) {
+      const conditions = [
+        "u.status = 'active'",
+        "r.code = 'indexer'",
+        dateCondition,
+      ];
 
-  if (projectId !== null) {
-    conditions.push("de.project_id = ?");
-    queryValues.push(projectId);
-  }
+      const queryValues = [];
 
-  if (employeeId !== null) {
-    conditions.push("u.user_id = ?");
-    queryValues.push(employeeId);
-  }
+      if (projectId !== null) {
+        conditions.push(
+          "de.project_id = ?"
+        );
 
-  [production] = await db.query(
-    `
-    SELECT
-      DATE_FORMAT(
-        de.production_date,
-        '%Y-%m-%d'
-      ) AS production_date,
+        queryValues.push(projectId);
+      }
 
-      DAYNAME(
-        de.production_date
-      ) AS day_name,
+      if (employeeId !== null) {
+        conditions.push(
+          "u.user_id = ?"
+        );
 
-      COALESCE(
-        SUM(de.docs_received),
-        0
-      ) AS received,
+        queryValues.push(employeeId);
+      }
 
-      COALESCE(
-        SUM(de.docs_completed),
-        0
-      ) AS completed
+      [production] = await db.query(
+        `
+        SELECT
+          DATE_FORMAT(
+            de.production_date,
+            '%Y-%m-%d'
+          ) AS production_date,
 
-    FROM users u
+          DAYNAME(
+            de.production_date
+          ) AS day_name,
 
-    JOIN role r
-      ON r.role_id = u.role_id
+          COALESCE(
+            SUM(de.docs_received),
+            0
+          ) AS received,
 
-    JOIN daily_entry de
-      ON de.user_id = u.user_id
+          COALESCE(
+            SUM(de.docs_completed),
+            0
+          ) AS completed
 
-    WHERE ${conditions.join(" AND ")}
+        FROM users u
 
-    GROUP BY
-      de.production_date,
-      DAYNAME(de.production_date)
+        JOIN role r
+          ON r.role_id = u.role_id
 
-    ORDER BY de.production_date ASC
-    `,
-    queryValues
-  );
-}
+        JOIN daily_entry de
+          ON de.user_id = u.user_id
+
+        WHERE ${conditions.join(
+          " AND "
+        )}
+
+        GROUP BY
+          de.production_date,
+          DAYNAME(de.production_date)
+
+        ORDER BY
+          de.production_date ASC
+        `,
+        queryValues
+      );
+    }
 
     else {
       return res.status(403).json({
@@ -498,8 +612,14 @@ else if (
   }
 };
 
+// ======================================================
+// EMPLOYEE PRODUCTION REPORT
+// ======================================================
 
-const getEmployeeProduction = async (req, res) => {
+const getEmployeeProduction = async (
+  req,
+  res
+) => {
   try {
     const userId = req.user.id;
     const role = req.user.role;
@@ -509,22 +629,28 @@ const getEmployeeProduction = async (req, res) => {
         ? "month"
         : "week";
 
-    const rawProjectId = req.query.projectId;
-    const rawEmployeeId = req.query.employeeId;
+    const rawProjectId =
+      req.query.projectId;
+
+    const rawEmployeeId =
+      req.query.employeeId;
 
     const projectId =
-      rawProjectId && rawProjectId !== "all"
+      rawProjectId &&
+      rawProjectId !== "all"
         ? Number(rawProjectId)
         : null;
 
     const employeeId =
-      rawEmployeeId && rawEmployeeId !== "all"
+      rawEmployeeId &&
+      rawEmployeeId !== "all"
         ? Number(rawEmployeeId)
         : null;
 
     if (
       projectId !== null &&
-      (!Number.isInteger(projectId) || projectId <= 0)
+      (!Number.isInteger(projectId) ||
+        projectId <= 0)
     ) {
       return res.status(400).json({
         success: false,
@@ -534,7 +660,8 @@ const getEmployeeProduction = async (req, res) => {
 
     if (
       employeeId !== null &&
-      (!Number.isInteger(employeeId) || employeeId <= 0)
+      (!Number.isInteger(employeeId) ||
+        employeeId <= 0)
     ) {
       return res.status(400).json({
         success: false,
@@ -545,47 +672,104 @@ const getEmployeeProduction = async (req, res) => {
     const dateCondition =
       getProductionDateCondition(period);
 
-      let userCondition;
-      let userConditionValues = [];
+    const attendanceDateCondition =
+      getAttendanceDateCondition(period);
 
-      if (role === "indexer") {
-        userCondition = "u.user_id = ?";
-        userConditionValues = [userId];
-      }
+    // Load saved productivity settings
+    const [productivitySettingRows] =
+      await db.query(
+        `
+        SELECT
+          setting_key,
+          setting_value
 
-      else if (role === "teamLead") {
-        userCondition = `
-          u.team_lead_id = ?
-          AND u.status = 'active'
-        `;
+        FROM app_setting
 
-        userConditionValues = [userId];
-      }
+        WHERE setting_key IN (
+          'productivity_base_metric',
+          'productivity_exclude_approved_leave'
+        )
+        `
+      );
 
-      else if (
-        role === "coreTeam" ||
-        role === "administrator"
-      ) {
-        userCondition = `
-          u.status = 'active'
-          AND u.role_id = (
-            SELECT role_id
-            FROM role
-            WHERE code = 'indexer'
-            LIMIT 1
-          )
-        `;
+    const productivitySettings =
+      Object.fromEntries(
+        productivitySettingRows.map(
+          (setting) => [
+            setting.setting_key,
+            setting.setting_value,
+          ]
+        )
+      );
 
-        userConditionValues = [];
-      }
+    const configuredBaseMetric =
+      productivitySettings
+        .productivity_base_metric;
 
-      else {
-        return res.status(403).json({
-          success: false,
-          message:
-            "You are not allowed to access this report",
-        });
-      }
+    const baseMetric = [
+      "documents_completed",
+      "batches_processed",
+    ].includes(configuredBaseMetric)
+      ? configuredBaseMetric
+      : "documents_completed";
+
+    const excludeApprovedLeave =
+      productivitySettings
+        .productivity_exclude_approved_leave ===
+      "1";
+
+    let userCondition;
+    let userConditionValues = [];
+
+    // =========================
+    // ROLE CONDITION
+    // =========================
+
+    if (role === "indexer") {
+      userCondition =
+        "u.user_id = ?";
+
+      userConditionValues = [
+        userId,
+      ];
+    }
+
+    else if (role === "teamLead") {
+      userCondition = `
+        u.team_lead_id = ?
+        AND u.status = 'active'
+      `;
+
+      userConditionValues = [
+        userId,
+      ];
+    }
+
+    else if (
+      role === "coreTeam" ||
+      role === "administrator"
+    ) {
+      userCondition = `
+        u.status = 'active'
+
+        AND u.role_id = (
+          SELECT role_id
+          FROM role
+          WHERE code = 'indexer'
+          LIMIT 1
+        )
+      `;
+
+      userConditionValues = [];
+    }
+
+    else {
+      return res.status(403).json({
+        success: false,
+        message:
+          "You are not allowed to access this report",
+      });
+    }
 
     let projectListCondition = "";
     let productionProjectCondition = "";
@@ -594,7 +778,7 @@ const getEmployeeProduction = async (req, res) => {
 
     const queryValues = [];
 
-    // First placeholder: project list subquery
+    // Project list placeholder
     if (projectId !== null) {
       projectListCondition =
         "WHERE pa.project_id = ?";
@@ -602,7 +786,7 @@ const getEmployeeProduction = async (req, res) => {
       queryValues.push(projectId);
     }
 
-    // Second placeholder: production subquery
+    // Production project placeholder
     if (projectId !== null) {
       productionProjectCondition =
         "AND de.project_id = ?";
@@ -610,22 +794,32 @@ const getEmployeeProduction = async (req, res) => {
       queryValues.push(projectId);
     }
 
-    // Values required by the role condition
-      queryValues.push(...userConditionValues);
+    // Role condition values
+    queryValues.push(
+      ...userConditionValues
+    );
 
-    // Selected employee
+    // Employee filter
     if (employeeId !== null) {
-      employeeCondition = "AND u.user_id = ?";
+      employeeCondition =
+        "AND u.user_id = ?";
+
       queryValues.push(employeeId);
     }
 
-    // Show only employees assigned to selected project
+    // Project-assignment filter
     if (projectId !== null) {
       assignedProjectCondition = `
         AND EXISTS (
           SELECT 1
-          FROM project_assignment pa_filter
-          WHERE pa_filter.user_id = u.user_id
+
+          FROM project_assignment
+            pa_filter
+
+          WHERE
+            pa_filter.user_id =
+              u.user_id
+
             AND pa_filter.project_id = ?
         )
       `;
@@ -633,118 +827,217 @@ const getEmployeeProduction = async (req, res) => {
       queryValues.push(projectId);
     }
 
-    const [employees] = await db.query(
-      `
-      SELECT
-        u.user_id AS id,
-        u.emp_code,
-        u.full_name AS employee_name,
+    const [employees] =
+      await db.query(
+        `
+        SELECT
+          u.user_id AS id,
+          u.emp_code,
+          u.full_name AS employee_name,
 
-        COALESCE(
-          projects.project_names,
-          '—'
-        ) AS projects,
+          COALESCE(
+            projects.project_names,
+            '—'
+          ) AS projects,
 
-        COALESCE(
-          production.received,
-          0
-        ) AS received,
-
-        COALESCE(
-          production.completed,
-          0
-        ) AS completed,
-
-        GREATEST(
-          COALESCE(production.received, 0) -
-          COALESCE(production.completed, 0),
-          0
-        ) AS pending,
-
-        CASE
-          WHEN COALESCE(
+          COALESCE(
             production.received,
             0
-          ) > 0
-          THEN ROUND(
-            (
-              COALESCE(
-                production.completed,
-                0
-              ) /
-              production.received
-            ) * 100
-          )
-          ELSE 0
-        END AS productivity
-
-      FROM users u
-
-      LEFT JOIN (
-        SELECT
-          pa.user_id,
-
-          GROUP_CONCAT(
-            DISTINCT p.project_name
-            ORDER BY p.project_name
-            SEPARATOR ', '
-          ) AS project_names
-
-        FROM project_assignment pa
-
-        JOIN project p
-          ON p.project_id = pa.project_id
-
-        ${projectListCondition}
-
-        GROUP BY pa.user_id
-      ) projects
-        ON projects.user_id = u.user_id
-
-      LEFT JOIN (
-        SELECT
-          de.user_id,
-
-          SUM(
-            de.docs_received
           ) AS received,
 
-          SUM(
-            de.docs_completed
-          ) AS completed
+          COALESCE(
+            production.completed,
+            0
+          ) AS completed,
 
-        FROM daily_entry de
+          COALESCE(
+            production.batchesProcessed,
+            0
+          ) AS batchesProcessed,
 
-        WHERE ${dateCondition}
-          ${productionProjectCondition}
+          COALESCE(
+            attendanceData.availableHours,
+            0
+          ) AS availableHours,
 
-        GROUP BY de.user_id
-      ) production
-        ON production.user_id = u.user_id
+          GREATEST(
+            COALESCE(
+              production.received,
+              0
+            ) -
+            COALESCE(
+              production.completed,
+              0
+            ),
+            0
+          ) AS pending
 
-      WHERE ${userCondition}
-        ${employeeCondition}
-        ${assignedProjectCondition}
+        FROM users u
 
-      ORDER BY u.full_name ASC
-      `,
-      queryValues
-    );
+        LEFT JOIN (
+          SELECT
+            pa.user_id,
+
+            GROUP_CONCAT(
+              DISTINCT p.project_name
+              ORDER BY p.project_name
+              SEPARATOR ', '
+            ) AS project_names
+
+          FROM project_assignment pa
+
+          JOIN project p
+            ON p.project_id =
+              pa.project_id
+
+          ${projectListCondition}
+
+          GROUP BY pa.user_id
+        ) projects
+          ON projects.user_id =
+            u.user_id
+
+        LEFT JOIN (
+          SELECT
+            de.user_id,
+
+            SUM(
+              de.docs_received
+            ) AS received,
+
+            SUM(
+              de.docs_completed
+            ) AS completed,
+
+            SUM(
+              de.batches_processed
+            ) AS batchesProcessed
+
+          FROM daily_entry de
+
+          WHERE ${dateCondition}
+            ${productionProjectCondition}
+
+          GROUP BY de.user_id
+        ) production
+          ON production.user_id =
+            u.user_id
+
+        LEFT JOIN (
+          SELECT
+            a.user_id,
+
+            SUM(
+              CASE
+                WHEN
+                  ast.is_leave = 1
+                  AND
+                  a.approved_by IS NOT NULL
+
+                THEN ${
+                  excludeApprovedLeave
+                    ? 0
+                    : 8
+                }
+
+                ELSE COALESCE(
+                  a.hours,
+                  0
+                )
+              END
+            ) AS availableHours
+
+          FROM attendance a
+
+          JOIN attendance_status ast
+            ON ast.status_id =
+              a.status_id
+
+          WHERE ${attendanceDateCondition}
+
+          GROUP BY a.user_id
+        ) attendanceData
+          ON attendanceData.user_id =
+            u.user_id
+
+        WHERE ${userCondition}
+          ${employeeCondition}
+          ${assignedProjectCondition}
+
+        ORDER BY
+          u.full_name ASC
+        `,
+        queryValues
+      );
+
+    const productivityUnit =
+      baseMetric ===
+      "batches_processed"
+        ? "batches/hour"
+        : "%";
 
     const employeesWithProductivity =
-      employees.map((employee) => ({
-        ...employee,
-        productivity:
-          calculateProductivity({
-            received: employee.received,
-            completed: employee.completed,
-          }),
-      }));
+      employees.map(
+        (employee) => ({
+          ...employee,
+
+          received: Number(
+            employee.received || 0
+          ),
+
+          completed: Number(
+            employee.completed || 0
+          ),
+
+          pending: Number(
+            employee.pending || 0
+          ),
+
+          batchesProcessed: Number(
+            employee.batchesProcessed ||
+              0
+          ),
+
+          availableHours: Number(
+            employee.availableHours || 0
+          ),
+
+          productivity:
+            calculateProductivity({
+              baseMetric,
+
+              received:
+                employee.received,
+
+              completed:
+                employee.completed,
+
+              batchesProcessed:
+                employee.batchesProcessed,
+
+              availableHours:
+                employee.availableHours,
+            }),
+
+          productivityUnit,
+        })
+      );
 
     return res.status(200).json({
       success: true,
+
       count:
         employeesWithProductivity.length,
+
+      baseMetric,
+
+      productivityBaseMetric:
+        baseMetric,
+
+      productivityUnit,
+
+      excludeApprovedLeave,
+
       employees:
         employeesWithProductivity,
     });
@@ -756,12 +1049,18 @@ const getEmployeeProduction = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message:
         "Failed to load employee production report",
+
       error: error.message,
     });
   }
 };
+
+// ======================================================
+// PRODUCTION DATE CONDITION
+// ======================================================
 
 const getProductionDateCondition = (
   period,
@@ -770,9 +1069,16 @@ const getProductionDateCondition = (
   if (period === "month") {
     return `
       ${alias}.production_date >=
-        DATE_FORMAT(CURDATE(), '%Y-%m-01')
+        DATE_FORMAT(
+          CURDATE(),
+          '%Y-%m-01'
+        )
+
       AND ${alias}.production_date <
-        DATE_ADD(LAST_DAY(CURDATE()), INTERVAL 1 DAY)
+        DATE_ADD(
+          LAST_DAY(CURDATE()),
+          INTERVAL 1 DAY
+        )
     `;
   }
 
@@ -780,13 +1086,64 @@ const getProductionDateCondition = (
     ${alias}.production_date >=
       DATE_SUB(
         CURDATE(),
-        INTERVAL WEEKDAY(CURDATE()) DAY
+        INTERVAL WEEKDAY(
+          CURDATE()
+        ) DAY
       )
+
     AND ${alias}.production_date <
       DATE_ADD(
         DATE_SUB(
           CURDATE(),
-          INTERVAL WEEKDAY(CURDATE()) DAY
+          INTERVAL WEEKDAY(
+            CURDATE()
+          ) DAY
+        ),
+        INTERVAL 7 DAY
+      )
+  `;
+};
+
+// ======================================================
+// ATTENDANCE DATE CONDITION
+// ======================================================
+
+const getAttendanceDateCondition = (
+  period,
+  alias = "a"
+) => {
+  if (period === "month") {
+    return `
+      ${alias}.att_date >=
+        DATE_FORMAT(
+          CURDATE(),
+          '%Y-%m-01'
+        )
+
+      AND ${alias}.att_date <
+        DATE_ADD(
+          LAST_DAY(CURDATE()),
+          INTERVAL 1 DAY
+        )
+    `;
+  }
+
+  return `
+    ${alias}.att_date >=
+      DATE_SUB(
+        CURDATE(),
+        INTERVAL WEEKDAY(
+          CURDATE()
+        ) DAY
+      )
+
+    AND ${alias}.att_date <
+      DATE_ADD(
+        DATE_SUB(
+          CURDATE(),
+          INTERVAL WEEKDAY(
+            CURDATE()
+          ) DAY
         ),
         INTERVAL 7 DAY
       )
