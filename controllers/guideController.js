@@ -1037,6 +1037,112 @@ const uploadGuideVersion = async (req, res) => {
 };
 
 // ======================================================
+// GET PENDING ACK GUIDE
+// Returns the single latest guide version that the
+// logged-in indexer has NOT yet acknowledged.
+// Used by the login popup (GuideUpdateModal).
+// ======================================================
+
+const getPendingAckGuide = async (req, res) => {
+  try {
+    // Gets the currently logged-in user's ID.
+    const userId = req.user.id;
+
+    // Finds the most recently uploaded guide that:
+    //   • is the latest version of its guide
+    //   • belongs to a project assigned to this user
+    //   • requires acknowledgement
+    //   • has NOT yet been acknowledged by this user
+    const [rows] = await db.query(
+      `
+      SELECT
+        gv.version_id,
+        g.guide_id,
+        g.title          AS guide_title,
+        p.project_name,
+        gv.version_label AS version,
+        gv.change_summary,
+        gv.uploaded_at,
+        gv.effective_date,
+        gv.requires_ack
+
+      FROM project_assignment pa
+
+      JOIN project p
+        ON p.project_id = pa.project_id
+
+      JOIN guide g
+        ON g.project_id = p.project_id
+
+      JOIN guide_version gv
+        ON gv.guide_id = g.guide_id
+
+      LEFT JOIN guide_acknowledgement ga
+        ON ga.version_id = gv.version_id
+       AND ga.user_id    = pa.user_id
+
+      WHERE pa.user_id       = ?
+        AND p.status         = 'active'
+        AND gv.is_latest     = 1
+        AND gv.requires_ack  = 1
+        AND (ga.status IS NULL OR ga.status <> 'read')
+
+      ORDER BY gv.uploaded_at DESC, gv.version_id DESC
+
+      LIMIT 1
+      `,
+      [userId]
+    );
+
+    // No pending guide found — modal should not open.
+    if (rows.length === 0) {
+      return res.status(200).json({
+        success: true,
+        hasPending: false,
+        guide: null,
+      });
+    }
+
+    const guide = rows[0];
+
+    // Formats the uploaded date for the frontend.
+    const formatDate = (value) => {
+      if (!value) return null;
+      return new Date(value).toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "long",
+        year: "numeric",
+      });
+    };
+
+    // Returns the unacknowledged guide details.
+    return res.status(200).json({
+      success: true,
+      hasPending: true,
+      guide: {
+        version_id:    guide.version_id,
+        guide_id:      guide.guide_id,
+        title:         guide.guide_title,
+        project_name:  guide.project_name,
+        version:       guide.version,
+        change_summary: guide.change_summary,
+        uploaded_at:   formatDate(guide.uploaded_at),
+        effective_date: formatDate(guide.effective_date),
+        requires_ack:  guide.requires_ack,
+      },
+    });
+  } catch (error) {
+    // Logs the full error for debugging.
+    console.error("Get Pending Ack Guide Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load pending guide",
+    });
+  }
+};
+
+// ======================================================
 // EXPORTS
 // ======================================================
 
@@ -1049,4 +1155,5 @@ module.exports = {
   getGuideManagerList,
   getGuideCompliance,
   uploadGuideVersion,
+  getPendingAckGuide,
 };

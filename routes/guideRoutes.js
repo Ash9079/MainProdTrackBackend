@@ -21,6 +21,7 @@ const {
   getGuideManagerList,
   getGuideCompliance,
   uploadGuideVersion,
+  getPendingAckGuide,
 } = require("../controllers/guideController");
 
 // Creates the shared Guide router.
@@ -58,6 +59,14 @@ router.get(
 // ======================================================
 // INDEXER / TEAM LEAD GUIDE APIs
 // ======================================================
+
+// Gets the latest unacknowledged guide for the login popup modal.
+router.get(
+  "/pending-ack",
+  authenticate,
+  allowRoles("indexer"),
+  getPendingAckGuide
+);
 
 // Gets the latest active guides assigned to the logged-in user.
 router.get(
