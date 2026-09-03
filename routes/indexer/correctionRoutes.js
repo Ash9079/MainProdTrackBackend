@@ -35,4 +35,11 @@ router.post(
   createCorrectionRequest
 );
 
+router.get(
+  "/locked-entries",
+  authenticate,
+  allowRoles("indexer"),
+  getLockedEntries
+);
+
 module.exports = router;

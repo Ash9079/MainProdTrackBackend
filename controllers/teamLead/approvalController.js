@@ -343,7 +343,7 @@ if (dailyEntryResult.affectedRows !== 1) {
     SELECT type_id
     FROM notification_type
     WHERE code = 'correction_approved'
-      AND is_enabled = 0
+      AND is_enabled = 1
     LIMIT 1
     `
   );
