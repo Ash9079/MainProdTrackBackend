@@ -1,5 +1,57 @@
 const db = require("../config/db");
 
+// Checks whether an Indexer is allowed to edit an entry based on the Admin locking rules.
+const getIndexerEditPermission = async (
+  executor,
+  entryStatus,
+  lockedAt
+) => {
+  // Locked entries can never be edited directly by an Indexer.
+  if (lockedAt) {
+    return false;
+  }
+
+  // Normalizes the workflow status before checking the configured rule.
+  const statusCode = String(entryStatus || "").toLowerCase();
+
+  // Reviewed and locked entries are not directly editable by an Indexer.
+  if (!["draft", "submitted"].includes(statusCode)) {
+    return false;
+  }
+
+  // Selects the app_setting key that controls the current workflow status.
+  const settingKey =
+    statusCode === "draft"
+      ? "draft_entry_rule"
+      : "submitted_entry_rule";
+
+  // Reads the current Administrator-configured rule from the database.
+  const [rules] = await executor.query(
+    `
+    SELECT setting_value
+    FROM app_setting
+    WHERE setting_key = ?
+    LIMIT 1
+    `,
+    [settingKey]
+  );
+
+  // Uses the documented default when the setting has not been created yet.
+  const defaultRule =
+    statusCode === "draft"
+      ? "editable_by_indexer"
+      : "read_only_for_indexer";
+
+  // Gets either the saved Admin rule or the default rule.
+  const configuredRule =
+    rules.length > 0
+      ? rules[0].setting_value
+      : defaultRule;
+
+  // Returns true only when the Administrator permits Indexer editing.
+  return configuredRule === "editable_by_indexer";
+};
+
 const getPendingRequiredGuides = async (
   executor,
   userId,
@@ -305,11 +357,10 @@ return res.status(201).json({
     });
   }
 };
-
-
-
+// Loads all daily entries created by the currently logged-in Indexer.
 const getMyEntries = async (req, res) => {
   try {
+    // Loads the Indexer's daily entries together with project and workflow details.
     const [entries] = await db.query(
       `
       SELECT
@@ -359,14 +410,31 @@ const getMyEntries = async (req, res) => {
       [req.user.id]
     );
 
+    // Calculates whether each entry is editable using the current Administrator locking rules.
+    const entriesWithPermissions = await Promise.all(
+      entries.map(async (entry) => ({
+        ...entry,
+
+        // Adds a backend-controlled edit permission for the frontend.
+        canEdit: await getIndexerEditPermission(
+          db,
+          entry.status,
+          entry.locked_at
+        ),
+      }))
+    );
+
+    // Returns the entries together with their edit permissions.
     return res.status(200).json({
       success: true,
-      count: entries.length,
-      entries,
+      count: entriesWithPermissions.length,
+      entries: entriesWithPermissions,
     });
   } catch (error) {
+    // Logs the database or permission error for debugging.
     console.error("Get Daily Entries Error:", error);
 
+    // Returns a safe API error response.
     return res.status(500).json({
       success: false,
       message: "Failed to load daily entries",
