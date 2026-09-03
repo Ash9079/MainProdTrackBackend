@@ -12,6 +12,7 @@ const {
   getAllUsers,
   getUserTeamLeads,
   getUserProjects,
+  getUserDepartments,
   createUser,
   updateUser,
 } = require("../controllers/userManagementController");
@@ -44,6 +45,14 @@ router.get(
   authenticate,
   allowRoles("coreTeam", "administrator"),
   getUserProjects
+);
+
+// Gets departments from the database for the Department dropdown.
+router.get(
+  "/users/departments",
+  authenticate,
+  allowRoles("coreTeam", "administrator"),
+  getUserDepartments
 );
 
 

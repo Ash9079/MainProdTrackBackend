@@ -242,6 +242,45 @@ const getUserProjects = async (req, res) => {
   }
 };
 
+// ============================================================
+// GET DEPARTMENTS FOR DROPDOWN
+// ============================================================
+
+// Loads departments directly from the department table for the User Master dropdown.
+const getUserDepartments = async (req, res) => {
+  try {
+    // Gets all departments from the database in alphabetical order.
+    const [departments] = await db.query(`
+      SELECT
+        department_id AS id,
+        name
+
+      FROM department
+
+      ORDER BY name ASC
+    `);
+
+    // Returns the department list to the frontend.
+    return res.status(200).json({
+      success: true,
+      count: departments.length,
+      departments,
+    });
+  } catch (error) {
+    // Logs the database error for backend debugging.
+    console.error(
+      "Get User Departments Error:",
+      error
+    );
+
+    // Returns a safe error response when departments cannot be loaded.
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load departments",
+      error: error.message,
+    });
+  }
+};
 
 // ============================================================
 // 4. CREATE USER
@@ -923,6 +962,7 @@ module.exports = {
   getAllUsers,
   getUserTeamLeads,
   getUserProjects,
+  getUserDepartments,
   createUser,
   updateUser,
 };
