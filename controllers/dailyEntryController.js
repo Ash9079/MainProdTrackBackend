@@ -52,6 +52,150 @@ const getIndexerEditPermission = async (
   return configuredRule === "editable_by_indexer";
 };
 
+// Automatically locks Reviewed entries after the project's configured Auto Lock Time and Grace Period expire.
+const applyAutomaticLocks = async () => {
+  let connection;
+
+  try {
+    // Gets a dedicated database connection because multiple locking queries must run together safely.
+    connection = await db.getConnection();
+
+    // Starts a transaction so entry locking and audit logging remain consistent.
+    await connection.beginTransaction();
+
+    // Gets the database status ID representing the Locked workflow state.
+    const [lockedStatuses] = await connection.query(
+      `
+      SELECT status_id
+      FROM entry_status
+      WHERE code = 'locked'
+      LIMIT 1
+      `
+    );
+
+    // Stops safely if the Locked workflow status is not configured.
+    if (lockedStatuses.length === 0) {
+      await connection.rollback();
+      console.error("Automatic Lock Error: locked status is not configured");
+      return;
+    }
+
+    // Stores the Locked status ID for the update below.
+    const lockedStatusId = lockedStatuses[0].status_id;
+
+    // Finds Reviewed entries whose project Auto Lock Time plus Grace Period has already passed.
+    const [entriesToLock] = await connection.query(
+      `
+      SELECT
+        de.entry_id,
+        de.user_id,
+        de.project_id,
+        de.production_date,
+        p.auto_lock_time,
+        COALESCE(p.grace_minutes, 0) AS grace_minutes
+
+      FROM daily_entry de
+
+      JOIN project p
+        ON p.project_id = de.project_id
+
+      JOIN entry_status es
+        ON es.status_id = de.status_id
+
+      WHERE es.code = 'reviewed'
+        AND de.locked_at IS NULL
+        AND p.auto_lock_time IS NOT NULL
+        AND p.status = 'active'
+
+        AND DATE_ADD(
+          TIMESTAMP(
+            de.production_date,
+            p.auto_lock_time
+          ),
+          INTERVAL COALESCE(p.grace_minutes, 0) MINUTE
+        ) <= NOW()
+
+      FOR UPDATE
+      `
+    );
+
+    // Locks each eligible entry and records the automatic action in the audit log.
+    for (const entry of entriesToLock) {
+      // Changes the workflow state to Locked and records when the lock occurred.
+      await connection.query(
+        `
+        UPDATE daily_entry
+        SET status_id = ?,
+            locked_at = NOW()
+        WHERE entry_id = ?
+          AND locked_at IS NULL
+        `,
+        [
+          lockedStatusId,
+          entry.entry_id,
+        ]
+      );
+
+      // Records that the system automatically locked this production entry.
+      await connection.query(
+        `
+        INSERT INTO audit_log
+          (
+            user_id,
+            action,
+            entity_type,
+            entity_ref,
+            detail
+          )
+        VALUES (?, ?, ?, ?, ?)
+        `,
+        [
+          entry.user_id,
+          "Auto locked daily entry",
+          "daily_entry",
+          String(entry.entry_id),
+          `System automatically locked entry ${entry.entry_id} after the project Auto Lock Time and Grace Period expired`,
+        ]
+      );
+    }
+
+    // Saves all automatic lock changes together.
+    await connection.commit();
+
+    // Prints a useful backend message only when entries were actually locked.
+    if (entriesToLock.length > 0) {
+      console.log(
+        `Automatic Lock: ${entriesToLock.length} daily entr${
+          entriesToLock.length === 1 ? "y" : "ies"
+        } locked`
+      );
+    }
+  } catch (error) {
+    // Rolls back all changes if any automatic-lock operation fails.
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "Automatic Lock Rollback Error:",
+          rollbackError
+        );
+      }
+    }
+
+    // Logs the automatic-lock failure without crashing the application.
+    console.error(
+      "Automatic Daily Entry Lock Error:",
+      error
+    );
+  } finally {
+    // Returns the database connection to the pool after processing.
+    if (connection) {
+      connection.release();
+    }
+  }
+};
+
 const getPendingRequiredGuides = async (
   executor,
   userId,
@@ -550,10 +694,20 @@ const updateEntry = async (req, res) => {
 
     const entry = entries[0];
 
-    if (entry.status !== "draft" || entry.locked_at !== null) {
-      reject(409, "Only an unlocked draft can be edited");
-    }
+    // Checks whether the current Admin locking rule allows this entry to be edited.
+        const canEditEntry = await getIndexerEditPermission(
+          connection,
+          entry.status,
+          entry.locked_at
+        );
 
+        // Blocks editing when the Admin has configured this status as read-only.
+        if (!canEditEntry) {
+          reject(
+            403,
+            `${entry.status} entries are currently read-only for Indexers`
+          );
+        }
     // Verify assignment and derive the category from the project.
     const [projects] = await connection.query(
       `
@@ -912,6 +1066,13 @@ const reviewEntry = async (req, res) => {
     if (connection) connection.release();
   }
 };
+// Runs the automatic locking check once when the backend starts.
+applyAutomaticLocks();
+
+// Checks every 60 seconds for Reviewed entries whose locking deadline has expired.
+setInterval(() => {
+  applyAutomaticLocks();
+}, 60 * 1000);
 module.exports = {
   createEntry,
   getMyEntries,
