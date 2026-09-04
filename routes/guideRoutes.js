@@ -22,6 +22,8 @@ const {
   getGuideCompliance,
   uploadGuideVersion,
   getPendingAckGuide,
+  getGuideSections,
+  updateGuideSection,
 } = require("../controllers/guideController");
 
 // Creates the shared Guide router.
@@ -98,6 +100,31 @@ router.get(
   authenticate,
   allowRoles("indexer", "teamLead"),
   downloadGuide
+);
+
+// Gets all clickable preview sections for one guide version.
+router.get(
+  "/:versionId/sections",
+  authenticate,
+  allowRoles(
+    "indexer",
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
+  getGuideSections
+);
+
+// UPDATE GUIDE SECTION
+// Allows Guide Manager roles to update one section of a guide version.
+router.put(
+  "/:versionId/sections/:sectionId",
+  authenticate,
+  allowRoles(
+    "coreTeam",
+    "administrator"
+  ),
+  updateGuideSection
 );
 
 // Exports the Guide router for use in index.js.

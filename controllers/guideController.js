@@ -853,6 +853,28 @@ const uploadGuideVersion = async (req, res) => {
       [guideId]
     );
 
+    // Loads the current latest version before it is replaced by the new upload.
+const [previousLatestRows] = await connection.query(
+  `
+  SELECT
+    version_id
+  FROM guide_version
+  WHERE guide_id = ?
+    AND is_latest = 1
+  ORDER BY
+    uploaded_at DESC,
+    version_id DESC
+  LIMIT 1
+  `,
+  [guideId]
+);
+
+// Stores the previous latest version ID so its guide sections can be copied later.
+const previousLatestVersionId =
+  previousLatestRows.length > 0
+    ? Number(previousLatestRows[0].version_id)
+    : null;
+
     // Prevents uploading a version for a nonexistent guide.
     if (guideRows.length === 0) {
       // Deletes the already-uploaded PDF because the database operation cannot continue.
@@ -941,6 +963,43 @@ const uploadGuideVersion = async (req, res) => {
 
     // Stores the newly generated version ID.
     const versionId = insertResult.insertId;
+
+    // ======================================================
+// COPY GUIDE SECTIONS FROM PREVIOUS LATEST VERSION
+// ======================================================
+
+// Copies the previous latest version's preview sections into the new version.
+if (previousLatestVersionId) {
+  await connection.query(
+    `
+    INSERT INTO guide_section
+    (
+      version_id,
+      section_key,
+      title,
+      content,
+      sort_order
+    )
+
+    SELECT
+      ?,
+      section_key,
+      title,
+      content,
+      sort_order
+
+    FROM guide_section
+
+    WHERE version_id = ?
+
+    ORDER BY sort_order ASC
+    `,
+    [
+      versionId,
+      previousLatestVersionId,
+    ]
+  );
+}
 
     // Creates pending acknowledgements only when this version requires acknowledgement.
     if (requiresAck === 1) {
@@ -1143,6 +1202,269 @@ const getPendingAckGuide = async (req, res) => {
 };
 
 // ======================================================
+// GET GUIDE SECTIONS
+// ======================================================
+
+// Gets all clickable preview sections for one guide version.
+const getGuideSections = async (req, res) => {
+  try {
+    // Gets the guide version ID from the URL.
+    const versionId = Number(req.params.versionId);
+
+    // Validates the guide version ID before querying the database.
+    if (!Number.isSafeInteger(versionId) || versionId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid guide version ID is required",
+      });
+    }
+
+    // Loads the guide version and parent guide information.
+    const [versionRows] = await db.query(
+      `
+      SELECT
+        gv.version_id,
+        gv.version_label,
+        gv.is_latest,
+        gv.requires_ack,
+        gv.effective_date,
+        gv.uploaded_at,
+
+        g.guide_id,
+        g.project_id,
+        g.title,
+
+        p.project_code,
+        p.project_name
+
+      FROM guide_version gv
+
+      INNER JOIN guide g
+        ON g.guide_id = gv.guide_id
+
+      INNER JOIN project p
+        ON p.project_id = g.project_id
+
+      WHERE gv.version_id = ?
+
+      LIMIT 1
+      `,
+      [versionId]
+    );
+
+    // Stops when the requested guide version does not exist.
+    if (versionRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Guide version not found",
+      });
+    }
+
+    // Loads all section records for the selected guide version.
+    const [sections] = await db.query(
+      `
+      SELECT
+        section_id,
+        version_id,
+        section_key,
+        title,
+        content,
+        sort_order
+
+      FROM guide_section
+
+      WHERE version_id = ?
+
+      ORDER BY
+        sort_order ASC,
+        section_id ASC
+      `,
+      [versionId]
+    );
+
+    // Returns guide metadata together with ordered preview sections.
+    return res.status(200).json({
+      success: true,
+
+      guide: {
+        version_id: Number(versionRows[0].version_id),
+        version_label: versionRows[0].version_label,
+        guide_id: Number(versionRows[0].guide_id),
+        project_id: Number(versionRows[0].project_id),
+        project_code: versionRows[0].project_code,
+        project_name: versionRows[0].project_name,
+        title: versionRows[0].title,
+        is_latest: Boolean(versionRows[0].is_latest),
+        requires_ack: Boolean(versionRows[0].requires_ack),
+        effective_date: versionRows[0].effective_date,
+        uploaded_at: versionRows[0].uploaded_at,
+      },
+
+      count: sections.length,
+
+      sections: sections.map((section) => ({
+        section_id: Number(section.section_id),
+        version_id: Number(section.version_id),
+        section_key: section.section_key,
+        title: section.title,
+        content: section.content,
+        sort_order: Number(section.sort_order),
+      })),
+    });
+  } catch (error) {
+    // Logs unexpected guide section loading errors.
+    console.error(
+      "Get Guide Sections Error:",
+      error
+    );
+
+    // Returns a safe server error response.
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load guide sections",
+      error: error.message,
+    });
+  }
+};
+
+// ======================================================
+// UPDATE GUIDE SECTION
+// ======================================================
+
+// Updates the content of one section belonging to a guide version.
+const updateGuideSection = async (req, res) => {
+  try {
+    // Gets the guide version ID from the URL.
+    const versionId = Number(req.params.versionId);
+
+    // Gets the section ID from the URL.
+    const sectionId = Number(req.params.sectionId);
+
+    // Gets editable section values from the request body.
+    const {
+      title,
+      content,
+    } = req.body || {};
+
+    // Validates the guide version ID.
+    if (
+      !Number.isSafeInteger(versionId) ||
+      versionId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid guide version ID is required",
+      });
+    }
+
+    // Validates the section ID.
+    if (
+      !Number.isSafeInteger(sectionId) ||
+      sectionId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid section ID is required",
+      });
+    }
+
+    // Validates the section title.
+    if (
+      typeof title !== "string" ||
+      !title.trim()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Section title is required",
+      });
+    }
+
+    // Validates the section content.
+    if (
+      typeof content !== "string" ||
+      !content.trim()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Section content is required",
+      });
+    }
+
+    // Updates only the requested section belonging to this version.
+    const [result] = await db.query(
+      `
+      UPDATE guide_section
+
+      SET
+        title = ?,
+        content = ?
+
+      WHERE section_id = ?
+        AND version_id = ?
+      `,
+      [
+        title.trim(),
+        content.trim(),
+        sectionId,
+        versionId,
+      ]
+    );
+
+    // Returns 404 when the section/version combination does not exist.
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Guide section not found",
+      });
+    }
+
+    // Returns the successfully updated section.
+    const [rows] = await db.query(
+      `
+      SELECT
+        section_id,
+        version_id,
+        section_key,
+        title,
+        content,
+        sort_order
+
+      FROM guide_section
+
+      WHERE section_id = ?
+        AND version_id = ?
+
+      LIMIT 1
+      `,
+      [
+        sectionId,
+        versionId,
+      ]
+    );
+
+    // Returns the updated section to the frontend.
+    return res.status(200).json({
+      success: true,
+      message: "Guide section updated successfully",
+      section: rows[0],
+    });
+  } catch (error) {
+    // Logs unexpected section update errors.
+    console.error(
+      "Update Guide Section Error:",
+      error
+    );
+
+    // Returns a safe server error response.
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update guide section",
+      error: error.message,
+    });
+  }
+};
+
+// ======================================================
 // EXPORTS
 // ======================================================
 
@@ -1156,4 +1478,6 @@ module.exports = {
   getGuideCompliance,
   uploadGuideVersion,
   getPendingAckGuide,
+  getGuideSections,
+  updateGuideSection,
 };
