@@ -1,6 +1,8 @@
 const db = require("../config/db");
 const bcrypt = require("bcryptjs");
-
+const {
+  sendPasswordEmail,
+} = require("../utils/mailer");
 
 // ============================================================
 // HELPER - GENERATE NEXT EMPLOYEE CODE
@@ -349,13 +351,28 @@ const createUser = async (req, res) => {
     );
 
     if (roleRows.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid role",
+          });
+        }
+
+        if (
+      !name ||
+      !username ||
+      !email ||
+      !password ||
+      !roleId
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid role",
+        message:
+          "Name, username, email, password and role are required",
       });
     }
 
-
+    const actualPassword =
+      String(password);
     // --------------------------------------------------------
     // Check duplicate username/email
     // --------------------------------------------------------
@@ -470,7 +487,10 @@ const createUser = async (req, res) => {
 
 
     const passwordHash =
-      await bcrypt.hash(password, 10);
+      await bcrypt.hash(
+        actualPassword,
+        10
+      );
 
 
     // --------------------------------------------------------
@@ -542,10 +562,33 @@ const createUser = async (req, res) => {
 
     await connection.commit();
 
+    let emailSent = false;
+
+    try {
+      await sendPasswordEmail({
+        name,
+        email,
+        password: actualPassword,
+        subject:
+          "Your ProdTrack account password",
+      });
+
+      emailSent = true;
+    } catch (emailError) {
+      console.error(
+        "Create User Email Error:",
+        emailError.message
+      );
+    }
 
     return res.status(201).json({
       success: true,
-      message: "User created successfully",
+
+      message: emailSent
+        ? "User created and password emailed successfully"
+        : "User created, but password email could not be sent",
+
+      emailSent,
 
       user: {
         id: userId,

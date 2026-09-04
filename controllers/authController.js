@@ -1,6 +1,11 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const db = require("../config/db");
+const crypto = require("crypto");
+
+const {
+  sendPasswordEmail,
+} = require("../utils/mailer");
 
 const {
   getAppSetting,
@@ -292,9 +297,156 @@ if (!passwordLoginAllowed) {
       error: error.message,
     });
   }
+
 };
 
+const forgotPassword = async (req, res) => {
+  let connection;
+
+  try {
+    const identifier = String(
+      req.body?.email || ""
+    ).trim();
+
+    if (!identifier) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Email or username is required",
+      });
+    }
+
+    // Check whether self-service reset is enabled
+    const passwordResetMethod =
+      await getAppSetting(
+        "password_reset",
+        "self_service"
+      );
+
+    if (
+      passwordResetMethod !==
+      "self_service"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Self-service password reset is disabled. Contact the administrator.",
+      });
+    }
+
+    // Find user using email or username
+    const [users] = await db.query(
+      `
+      SELECT
+        user_id,
+        full_name,
+        username,
+        email,
+        status
+      FROM users
+      WHERE email = ?
+         OR username = ?
+      LIMIT 1
+      `,
+      [identifier, identifier]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "No user was found with this email or username",
+      });
+    }
+
+    const user = users[0];
+
+    if (user.status !== "active") {
+      return res.status(403).json({
+        success: false,
+        message:
+          "This account is inactive",
+      });
+    }
+
+    if (!user.email) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "No email is registered for this user",
+      });
+    }
+
+    // Generate actual new password
+    const newPassword =
+      `Prod@${crypto
+        .randomBytes(6)
+        .toString("base64url")}`;
+
+    // Store only its hash in database
+    const passwordHash =
+      await bcrypt.hash(
+        newPassword,
+        10
+      );
+
+    connection =
+      await db.getConnection();
+
+    await connection.beginTransaction();
+
+    await connection.query(
+      `
+      UPDATE users
+      SET password_hash = ?
+      WHERE user_id = ?
+      `,
+      [
+        passwordHash,
+        user.user_id,
+      ]
+    );
+
+    // Send actual generated password by email
+    await sendPasswordEmail({
+      name: user.full_name,
+      email: user.email,
+      password: newPassword,
+      subject:
+        "Your new ProdTrack password",
+    });
+
+    await connection.commit();
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "A new password has been sent to your registered email.",
+    });
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+
+    console.error(
+      "Forgot Password Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to reset password",
+      error: error.message,
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};
 
 module.exports = {
   login,
+  forgotPassword,
 };

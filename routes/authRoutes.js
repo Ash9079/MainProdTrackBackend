@@ -2,14 +2,27 @@ const express = require("express");
 
 const {
   login,
+  forgotPassword,
 } = require("../controllers/authController");
 
-const authenticate = require("../middleware/authMiddleware");
-const allowRoles = require("../middleware/roleMiddleware");
+const authenticate = require(
+  "../middleware/authMiddleware"
+);
+
+const allowRoles = require(
+  "../middleware/roleMiddleware"
+);
 
 const router = express.Router();
 
+// Login
 router.post("/login", login);
+
+// Forgot password does not require login token
+router.post(
+  "/forgot-password",
+  forgotPassword
+);
 
 // Test: any logged-in user
 router.get(
@@ -18,7 +31,8 @@ router.get(
   (req, res) => {
     res.json({
       success: true,
-      message: "Authentication successful",
+      message:
+        "Authentication successful",
       user: req.user,
     });
   }
@@ -32,7 +46,8 @@ router.get(
   (req, res) => {
     res.json({
       success: true,
-      message: "Indexer access granted",
+      message:
+        "Indexer access granted",
       user: req.user,
     });
   }
@@ -46,7 +61,8 @@ router.get(
   (req, res) => {
     res.json({
       success: true,
-      message: "Administrator access granted",
+      message:
+        "Administrator access granted",
       user: req.user,
     });
   }

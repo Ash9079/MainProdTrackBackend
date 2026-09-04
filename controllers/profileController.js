@@ -1,5 +1,9 @@
 const db = require("../config/db");
+const bcrypt = require("bcryptjs");
 
+const {
+  sendPasswordEmail,
+} = require("../utils/mailer");
 // Gets profile details for the logged-in user
 const getMyProfile = async (req, res) => {
   try {
@@ -157,6 +161,183 @@ const getMyProfile = async (req, res) => {
   }
 };
 
+// Changes password for the logged-in user
+const changeMyPassword = async (
+  req,
+  res
+) => {
+  let connection;
+
+  try {
+    const userId = req.user.id;
+
+    const {
+      currentPassword,
+      newPassword,
+      confirmPassword,
+    } = req.body;
+
+    if (
+      !currentPassword ||
+      !newPassword ||
+      !confirmPassword
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Current password, new password and confirm password are required",
+      });
+    }
+
+    if (
+      String(newPassword).length < 8
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "New password must contain at least 8 characters",
+      });
+    }
+
+    if (
+      String(newPassword).length > 72
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "New password cannot exceed 72 characters",
+      });
+    }
+
+    if (
+      newPassword !== confirmPassword
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "New password and confirm password do not match",
+      });
+    }
+
+    if (
+      currentPassword === newPassword
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "New password must be different from the current password",
+      });
+    }
+
+    const [users] = await db.query(
+      `
+      SELECT
+        user_id,
+        full_name,
+        email,
+        password_hash,
+        status
+      FROM users
+      WHERE user_id = ?
+      LIMIT 1
+      `,
+      [userId]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const user = users[0];
+
+    if (user.status !== "active") {
+      return res.status(403).json({
+        success: false,
+        message:
+          "Your account is inactive",
+      });
+    }
+
+    const passwordMatches =
+      await bcrypt.compare(
+        currentPassword,
+        user.password_hash
+      );
+
+    if (!passwordMatches) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Current password is incorrect",
+      });
+    }
+
+    const newPasswordHash =
+      await bcrypt.hash(
+        newPassword,
+        10
+      );
+
+    connection =
+      await db.getConnection();
+
+    await connection.beginTransaction();
+
+    await connection.query(
+      `
+      UPDATE users
+      SET password_hash = ?
+      WHERE user_id = ?
+      `,
+      [
+        newPasswordHash,
+        userId,
+      ]
+    );
+
+    // Actual new password email par send hoga
+    await sendPasswordEmail({
+      name: user.full_name,
+      email: user.email,
+      password: newPassword,
+      subject:
+        "Your ProdTrack password was changed",
+    });
+
+    await connection.commit();
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Password changed successfully. The new password was sent to your email.",
+    });
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+
+    console.error(
+      "Change Password Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Failed to change password",
+      error: error.message,
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};
+
 module.exports = {
   getMyProfile,
+  changeMyPassword,
 };
