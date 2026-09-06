@@ -7,6 +7,8 @@ const {
   getMyReportSummary,
   getMyDailyProduction,
   getEmployeeProduction,
+  getProjectProduction,
+  getCorrectionReport,
 } = require("../controllers/reportController");
 
 const router = express.Router();
@@ -48,5 +50,33 @@ router.get(
 ),
   getEmployeeProduction
 );
+
+// Gets project-wise production report
+router.get(
+  "/project-production",
+  authenticate,
+  allowRoles(
+    "indexer",
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
+  getProjectProduction
+);
+
+// Gets correction request report
+router.get(
+  "/correction-log",
+  authenticate,
+  allowRoles(
+    "indexer",
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
+  getCorrectionReport
+);
+
+
 
 module.exports = router;

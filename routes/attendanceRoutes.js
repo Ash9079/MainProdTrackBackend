@@ -6,6 +6,7 @@ const allowRoles = require("../middleware/roleMiddleware");
 const {
   getMyAttendance,
   getAttendanceSummary,
+  markAttendance,
 } = require("../controllers/attendanceController");
 
 const router = express.Router();
@@ -24,6 +25,14 @@ router.get(
   authenticate,
   allowRoles("indexer", "teamLead"),
   getAttendanceSummary
+);
+
+// Team Lead marks team-member attendance
+router.post(
+  "/mark",
+  authenticate,
+  allowRoles("teamLead"),
+  markAttendance
 );
 
 module.exports = router;
