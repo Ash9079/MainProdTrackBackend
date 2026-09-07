@@ -130,31 +130,48 @@ const acknowledgeGuide = async (req, res) => {
       });
     }
 
-    // Inserts acknowledgement or updates an existing unread acknowledgement.
-    await db.query(
-      `
-      INSERT INTO guide_acknowledgement
-      (
-        version_id,
-        user_id,
-        status,
-        acknowledged_at
-      )
+   // Checks whether acknowledgement row already exists.
+const [existingAcknowledgements] =
+  await db.query(
+    `
+    SELECT ack_id
+    FROM guide_acknowledgement
+    WHERE version_id = ?
+      AND user_id = ?
+    LIMIT 1
+    `,
+    [versionId, userId]
+  );
 
-      VALUES (?, ?, 'read', NOW())
-
-      ON DUPLICATE KEY UPDATE
-
-        acknowledged_at = IF(
+    // Existing unread row ko read mein update karta hai.
+    if (existingAcknowledgements.length > 0) {
+      await db.query(
+        `
+        UPDATE guide_acknowledgement
+        SET
           status = 'read',
-          COALESCE(acknowledged_at, NOW()),
-          NOW()
-        ),
-
-        status = 'read'
-      `,
-      [versionId, userId]
-    );
+          acknowledged_at = NOW()
+        WHERE version_id = ?
+          AND user_id = ?
+        `,
+        [versionId, userId]
+      );
+    } else {
+      // Ortho Kids jaise guide ke liye row nahi hai toh create karta hai.
+      await db.query(
+        `
+        INSERT INTO guide_acknowledgement
+        (
+          version_id,
+          user_id,
+          status,
+          acknowledged_at
+        )
+        VALUES (?, ?, 'read', NOW())
+        `,
+        [versionId, userId]
+      );
+    }
 
     // Returns successful acknowledgement response.
     return res.status(200).json({
