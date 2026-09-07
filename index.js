@@ -58,6 +58,8 @@ const settingsRoutes = require(
 
 // Imports Administrator dashboard routes
 const adminDashboardRoutes = require("./routes/administrator/dashboardRoutes");
+// Imports global search routes.
+const searchRoutes = require("./routes/searchRoutes");
 
 
 // ============================================
@@ -159,21 +161,14 @@ app.use("/api/audit-logs",auditLogRoutes);
 // Mounts Administrator Daily Entry Locking Rules APIs.
 app.use("/api/admin", adminLockingRulesRoutes);
 
-app.use(
-  "/api/audit-logs",
-  auditLogRoutes
-);
+app.use("/api/audit-logs",auditLogRoutes);
 
-app.use(
-  "/api/settings",
-  settingsRoutes
-);
+app.use("/api/settings",settingsRoutes);
 
 // Registers Administrator dashboard APIs under /api/admin
-app.use(
-  "/api/admin", 
-  adminDashboardRoutes
-);
+app.use("/api/admin",adminDashboardRoutes);
+// Registers the global search API.
+app.use("/api/search", searchRoutes);
 
 // ============================================
 // SERVER
