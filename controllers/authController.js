@@ -18,6 +18,119 @@ const roleKeyMap = {
   admin: "administrator",
 };
 
+// Successful Indexer login par today's attendance Present mark karta hai.
+const markIndexerPresentOnLogin = async (user) => {
+  try {
+    // Sirf Indexer ki attendance automatically mark hogi.
+    if (user.role_code !== "indexer") {
+      return;
+    }
+
+    // Approved leave check karta hai.
+    const [approvedLeaves] = await db.query(
+      `
+      SELECT leave_request_id
+      FROM leave_request
+      WHERE user_id = ?
+        AND status = 'APPROVED'
+        AND CURDATE() BETWEEN start_date AND end_date
+      LIMIT 1
+      `,
+      [user.user_id]
+    );
+
+    // Approved leave hai toh Present mark nahi karna.
+    if (approvedLeaves.length > 0) {
+      return;
+    }
+
+    // Aaj ka existing attendance record check karta hai.
+    const [existingAttendance] = await db.query(
+      `
+      SELECT
+        a.attendance_id,
+        ats.code AS status_code,
+        ats.is_leave
+      FROM attendance a
+      JOIN attendance_status ats
+        ON ats.status_id = a.status_id
+      WHERE a.user_id = ?
+        AND a.att_date = CURDATE()
+      LIMIT 1
+      `,
+      [user.user_id]
+    );
+
+    // Leave/Holiday/Training jaise existing records overwrite nahi honge.
+    if (
+      existingAttendance.length > 0 &&
+      existingAttendance[0].status_code !== "absent"
+    ) {
+      return;
+    }
+
+    // Present status ka ID load karta hai.
+    const [presentStatuses] = await db.query(
+      `
+      SELECT status_id
+      FROM attendance_status
+      WHERE code = 'present'
+      LIMIT 1
+      `
+    );
+
+    if (presentStatuses.length === 0) {
+      console.error(
+        "Login Attendance Error: Present status is not configured"
+      );
+      return;
+    }
+
+    const presentStatusId =
+      presentStatuses[0].status_id;
+
+    // Aaj ka record nahi hai toh create karega.
+    // Absent record hai toh Present mein update karega.
+    await db.query(
+      `
+      INSERT INTO attendance
+      (
+        user_id,
+        att_date,
+        status_id,
+        hours,
+        note,
+        approved_by
+      )
+      VALUES (
+        ?,
+        CURDATE(),
+        ?,
+        8,
+        'Automatically marked Present after successful login',
+        NULL
+      )
+
+      ON DUPLICATE KEY UPDATE
+        status_id = VALUES(status_id),
+        hours = VALUES(hours),
+        note = VALUES(note),
+        approved_by = NULL
+      `,
+      [
+        user.user_id,
+        presentStatusId,
+      ]
+    );
+  } catch (error) {
+    // Attendance error ki wajah se login block nahi hoga.
+    console.error(
+      "Login Attendance Error:",
+      error
+    );
+  }
+};
+
 const recordLoginEvent = async ({
   req,
   userId = null,
@@ -148,11 +261,12 @@ const login = async (req, res) => {
         usernameTried: email,
         success: false,
       });
-
+     
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
       });
+      
     }
 
     const user = users[0];
@@ -262,6 +376,8 @@ if (!passwordLoginAllowed) {
       [user.user_id]
     );
 
+    await markIndexerPresentOnLogin(user);
+    
     await recordLoginEvent({
       req,
       userId: user.user_id,

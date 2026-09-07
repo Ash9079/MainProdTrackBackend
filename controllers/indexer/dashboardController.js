@@ -16,7 +16,7 @@ const getIndexerDashboard = async (req, res) => {
       `,
       [userId]
     );
-
+    //
     const [todayRows] = await db.query(
       `
       SELECT COALESCE(SUM(docs_completed), 0) AS today_productivity
