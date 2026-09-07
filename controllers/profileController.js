@@ -303,6 +303,7 @@ const changeMyPassword = async (
       name: user.full_name,
       email: user.email,
       password: newPassword,
+      passwordSource: "Reset Password",
       subject:
         "Your ProdTrack password was changed",
     });

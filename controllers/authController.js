@@ -377,7 +377,7 @@ if (!passwordLoginAllowed) {
     );
 
     await markIndexerPresentOnLogin(user);
-    
+
     await recordLoginEvent({
       req,
       userId: user.user_id,
@@ -528,6 +528,7 @@ const forgotPassword = async (req, res) => {
       name: user.full_name,
       email: user.email,
       password: newPassword,
+      passwordSource: "Forgot Password",
       subject:
         "Your new ProdTrack password",
     });

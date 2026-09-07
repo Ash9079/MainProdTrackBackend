@@ -569,6 +569,7 @@ const createUser = async (req, res) => {
         name,
         email,
         password: actualPassword,
+        passwordSource: "New User",
         subject:
           "Your ProdTrack account password",
       });

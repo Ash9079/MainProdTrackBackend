@@ -34,6 +34,7 @@ const sendPasswordEmail = async ({
   name,
   email,
   password,
+  passwordSource = "Password Reset",
   subject,
 }) => {
   const templatePath = path.join(
@@ -47,14 +48,36 @@ const sendPasswordEmail = async ({
       "utf8"
     );
 
-  const datetime =
-    new Date().toLocaleString(
-      "en-IN",
+  // Date: 07 September 2026
+  const now = new Date();
+
+  const datePart =
+    now.toLocaleDateString(
+      "en-GB",
       {
+        day: "2-digit",
+        month: "long",
+        year: "numeric",
         timeZone: "Asia/Kolkata",
       }
     );
 
+  // Time: 05:30 PM
+  const timePart =
+    now.toLocaleTimeString(
+      "en-US",
+      {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+        timeZone: "Asia/Kolkata",
+      }
+    );
+
+  const formattedDate =
+    `${datePart}, ${timePart}`;
+
+  // Replaces HTML template placeholders
   html = html
     .replaceAll(
       "{{name}}",
@@ -69,8 +92,12 @@ const sendPasswordEmail = async ({
       escapeHtml(password)
     )
     .replaceAll(
-      "{{datetime}}",
-      escapeHtml(datetime)
+      "{{passwordSource}}",
+      escapeHtml(passwordSource)
+    )
+    .replaceAll(
+      "{{formattedDate}}",
+      escapeHtml(formattedDate)
     );
 
   return transporter.sendMail({
