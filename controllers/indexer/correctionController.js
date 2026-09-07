@@ -4,6 +4,29 @@ const db = require("../../config/db");
 const createCorrectionRequest = async (req, res) => {
   try {
     const userId = req.user.id;
+    // Checks the current locked-entry rule before allowing a correction request.
+const [lockingRuleRows] = await db.query(
+  `
+    SELECT setting_value
+    FROM app_setting
+    WHERE setting_key = 'locked_entry_rule'
+    LIMIT 1
+  `
+);
+
+// Uses correction-request mode as the fallback if the setting is missing.
+const lockedEntryRule =
+  lockingRuleRows[0]?.setting_value ||
+  "correction_request_required";
+
+// Blocks correction requests when locked entries are configured as read-only.
+if (lockedEntryRule === "read_only") {
+  return res.status(403).json({
+    success: false,
+    message:
+      "Locked entries are read-only. Correction requests are not allowed.",
+  });
+}
 
     const {
       dailyEntryId,
@@ -243,6 +266,29 @@ const getMyCorrectionRequests = async (req, res) => {
 const getLockedEntries = async (req, res) => {
   try {
     const userId = req.user.id;
+    // Checks whether locked entries may be used for correction requests.
+const [lockingRuleRows] = await db.query(
+  `
+    SELECT setting_value
+    FROM app_setting
+    WHERE setting_key = 'locked_entry_rule'
+    LIMIT 1
+  `
+);
+
+// Uses correction-request mode as the fallback if the setting is missing.
+const lockedEntryRule =
+  lockingRuleRows[0]?.setting_value ||
+  "correction_request_required";
+
+// Returns no selectable locked entries when they are configured as read-only.
+if (lockedEntryRule === "read_only") {
+  return res.status(200).json({
+    success: true,
+    count: 0,
+    entries: [],
+  });
+}
 
     const [entries] = await db.query(
       `
