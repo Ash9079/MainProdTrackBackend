@@ -171,6 +171,78 @@ app.use("/api/admin",adminDashboardRoutes);
 app.use("/api/search", searchRoutes);
 
 // ============================================
+// AUTO-LOCK SCHEDULER
+// ============================================
+
+// Checks every minute whether submitted/reviewed entries have reached
+// their project's configured auto-lock time plus grace period.
+const runAutoLock = async () => {
+  try {
+    // Locks today's eligible entries when their configured lock time has passed.
+    const [result] = await db.query(`
+      UPDATE daily_entry de
+
+      JOIN project p
+        ON p.project_id = de.project_id
+
+      JOIN entry_status current_status
+        ON current_status.status_id = de.status_id
+
+      SET
+        de.status_id = (
+          SELECT locked_status.status_id
+          FROM entry_status locked_status
+          WHERE locked_status.code = 'locked'
+          LIMIT 1
+        ),
+        de.locked_at = NOW()
+
+      WHERE de.production_date = CURDATE()
+
+        AND current_status.code IN (
+          'submitted',
+          'reviewed'
+        )
+
+        AND p.auto_lock_time IS NOT NULL
+
+        AND CURTIME() >= ADDTIME(
+          p.auto_lock_time,
+          SEC_TO_TIME(
+            p.grace_minutes * 60
+          )
+        )
+    `);
+
+    // Logs only when at least one entry was automatically locked.
+    if (result.affectedRows > 0) {
+      console.log(
+        `Auto-lock: ${result.affectedRows} entr${
+          result.affectedRows === 1
+            ? "y"
+            : "ies"
+        } locked`
+      );
+    }
+  } catch (error) {
+    // Logs scheduler errors without stopping the backend server.
+    console.error(
+      "Auto-lock scheduler error:",
+      error
+    );
+  }
+};
+
+// Runs the auto-lock check once when the backend starts.
+runAutoLock();
+
+// Runs the auto-lock check every 60 seconds.
+setInterval(
+  runAutoLock,
+  60 * 1000
+);
+
+// ============================================
 // SERVER
 // ============================================
 
