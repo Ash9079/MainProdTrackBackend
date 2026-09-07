@@ -2,36 +2,34 @@ const db = require("../../config/db");
 // Checks whether the logged-in role can approve/reject corrections
 // according to the rule saved by Administrator in Locking Rules.
 const canReviewCorrection = async (role) => {
-  // Gets the current correction approval rule from app_setting.
-  const [rows] = await db.query(
-    `
-      SELECT setting_value
-      FROM app_setting
-      WHERE setting_key = 'correction_approver_rule'
-      LIMIT 1
-    `
-  );
+  // Administrator and Core Team can always approve/reject corrections
+  // regardless of what rule is saved in Locking Rules.
+  if (role === "administrator" || role === "coreTeam") {
+    return true;
+  }
 
-  // Uses Team Lead only as the safe fallback when the setting is missing.
-  const rule =
-    rows[0]?.setting_value || "team_lead_only";
-
-  // Team Lead is allowed in both supported approval modes.
+  // Team Lead access depends on the correction_approver_rule setting.
   if (role === "teamLead") {
-    return true;
+    const [rows] = await db.query(
+      `
+        SELECT setting_value
+        FROM app_setting
+        WHERE setting_key = 'correction_approver_rule'
+        LIMIT 1
+      `
+    );
+
+    // Falls back to allowing Team Lead when the setting is missing.
+    const rule = rows[0]?.setting_value || "team_lead_only";
+
+    // Team Lead is allowed under both supported rule modes.
+    return (
+      rule === "team_lead_only" ||
+      rule === "team_lead_then_core_team"
+    );
   }
 
-  // Core Team and Administrator are allowed only when
-  // the Administrator enables the Team Lead + Core Team rule.
-  if (
-    rule === "team_lead_then_core_team" &&
-    (role === "coreTeam" ||
-      role === "administrator")
-  ) {
-    return true;
-  }
-
-  // All other role/rule combinations are blocked.
+  // All other roles are blocked.
   return false;
 };
 
