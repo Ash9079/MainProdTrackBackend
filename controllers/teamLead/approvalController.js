@@ -1,10 +1,57 @@
 const db = require("../../config/db");
+// Checks whether the logged-in role can approve/reject corrections
+// according to the rule saved by Administrator in Locking Rules.
+const canReviewCorrection = async (role) => {
+  // Gets the current correction approval rule from app_setting.
+  const [rows] = await db.query(
+    `
+      SELECT setting_value
+      FROM app_setting
+      WHERE setting_key = 'correction_approver_rule'
+      LIMIT 1
+    `
+  );
+
+  // Uses Team Lead only as the safe fallback when the setting is missing.
+  const rule =
+    rows[0]?.setting_value || "team_lead_only";
+
+  // Team Lead is allowed in both supported approval modes.
+  if (role === "teamLead") {
+    return true;
+  }
+
+  // Core Team and Administrator are allowed only when
+  // the Administrator enables the Team Lead + Core Team rule.
+  if (
+    rule === "team_lead_then_core_team" &&
+    (role === "coreTeam" ||
+      role === "administrator")
+  ) {
+    return true;
+  }
+
+  // All other role/rule combinations are blocked.
+  return false;
+};
 
 // Gets pending correction requests from the Team Lead's team
 const getPendingApprovals = async (req, res) => {
   try {
     const userId = req.user.id;
     const role = req.user.role;
+    // Checks the current Locking Rules setting before allowing approval.
+const canApprove =
+  await canReviewCorrection(role);
+
+// Blocks the request when the saved approval rule does not allow this role.
+if (!canApprove) {
+  return res.status(403).json({
+    success: false,
+    message:
+      "You are not allowed to approve corrections under the current Locking Rules",
+  });
+}
 
     let scopeCondition = "";
     let queryValues = [];
@@ -121,6 +168,18 @@ const approveCorrectionRequest = async (req, res) => {
   try {
     const reviewerId = req.user.id;
 const role = req.user.role;
+// Checks the current Locking Rules setting before allowing rejection.
+const canReject =
+  await canReviewCorrection(role);
+
+// Blocks rejection when the saved rule does not allow this role.
+if (!canReject) {
+  return res.status(403).json({
+    success: false,
+    message:
+      "You are not allowed to reject corrections under the current Locking Rules",
+  });
+}
 
 let requestScope = "";
 let scopeValues = [];
