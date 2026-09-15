@@ -49,6 +49,22 @@ const createLeaveRequest = async (req, res) => {
       });
     }
 
+    // Validate leave type against the known allowed values.
+    // Maps frontend code -> display name stored in leave_request.leave_type.
+    const LEAVE_TYPE_MAP = {
+      planned_leave: "Planned Leave",
+      sick_leave: "Sick Leave",
+    };
+
+    const leaveTypeName = LEAVE_TYPE_MAP[leaveType.trim().toLowerCase()];
+
+    if (!leaveTypeName) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid leave type. Allowed values: planned_leave, sick_leave.",
+      });
+    }
+
     connection = await db.getConnection();
     await connection.beginTransaction();
     transactionStarted = true;
@@ -58,22 +74,6 @@ const createLeaveRequest = async (req, res) => {
         httpStatus,
       });
     };
-
-    // Validate leave type using attendance status settings
-    const [types] = await connection.query(
-      `
-      SELECT name
-      FROM attendance_status
-      WHERE is_leave = 1
-        AND (code = ? OR name = ?)
-      LIMIT 1
-      `,
-      [leaveType.trim(), leaveType.trim()]
-    );
-
-    if (types.length === 0) {
-      reject(400, "Invalid leave type");
-    }
 
     // Find the employee and assigned Team Lead
     const [users] = await connection.query(
@@ -108,7 +108,7 @@ const createLeaveRequest = async (req, res) => {
       `,
       [
         userId,
-        types[0].name,
+        leaveTypeName,
         startDate,
         endDate,
         reason.trim(),
