@@ -9,9 +9,9 @@ const authRoutes = require("./routes/authRoutes");
 
 const app = express();
 const dashboardRoutes = require("./routes/indexer/dashboardRoutes");
-// Imports Project routes 
+// Imports Project routes
 const projectRoutes = require("./routes/projectRoutes");
-// Imports dailyEntry routes 
+// Imports dailyEntry routes
 const dailyEntryRoutes = require("./routes/dailyEntryRoutes");
 // Imports guideRoutes routes
 const guideRoutes = require("./routes/guideRoutes");
@@ -27,11 +27,11 @@ const profileRoutes = require("./routes/profileRoutes");
 const reportRoutes = require("./routes/reportRoutes");
 // Imports Team Lead team routes
 const teamRoutes = require("./routes/teamLead/teamRoutes");
-//handle teamlead dashbaords 
+//handle teamlead dashbaords
 const teamLeadDashboardRoutes = require("./routes/teamLead/dashboardRoutes");
 //
 const teamLeadApprovalRoutes = require("./routes/teamLead/approvalRoutes");
-//Imports leave routes 
+//Imports leave routes
 const leaveRoutes = require("./routes/leaveRoutes");
 //password reset routes
 const passwordRoutes = require("./routes/passwordRoutes");
@@ -47,20 +47,17 @@ const coreTeamProjectMasterRoutes = require("./routes/projectMasterRoutes");
 const coreTeamUserManagementRoutes = require("./routes/userManagementRoutes");
 // Imports Core Team Assignment Matrix routes.
 const coreTeamAssignmentMatrixRoutes = require("./routes/coreTeam/assignmentMatrixRoutes");
-const indexerCorrectionRoutes = require( "./routes/indexer/correctionRoutes");
-const complianceRoutes = require( "./routes/complianceRoutes");
-const auditLogRoutes = require( "./routes/auditLogRoutes");
+const indexerCorrectionRoutes = require("./routes/indexer/correctionRoutes");
+const complianceRoutes = require("./routes/complianceRoutes");
+const auditLogRoutes = require("./routes/auditLogRoutes");
 // Imports Administrator Daily Entry Locking Rules routes.
 const adminLockingRulesRoutes = require("./routes/administrator/lockingRulesRoutes");
-const settingsRoutes = require(
-  "./routes/settingsRoutes"
-);
+const settingsRoutes = require("./routes/settingsRoutes");
 
 // Imports Administrator dashboard routes
 const adminDashboardRoutes = require("./routes/administrator/dashboardRoutes");
 // Imports global search routes.
 const searchRoutes = require("./routes/searchRoutes");
-
 
 // ============================================
 // MIDDLEWARE
@@ -87,9 +84,7 @@ app.get("/", (req, res) => {
 
 app.get("/api/test-db", async (req, res) => {
   try {
-    const [rows] = await db.query(
-      "SELECT 1 + 1 AS result"
-    );
+    const [rows] = await db.query("SELECT 1 + 1 AS result");
 
     res.json({
       success: true,
@@ -133,8 +128,8 @@ app.use("/api/dashboard", dashboardRoutes);
 // Handles Team Lead team APIs
 app.use("/api/team-lead", teamRoutes);
 // Handles Team Lead Dashboards APIs
-app.use( "/api/team-lead",teamLeadDashboardRoutes);
-// Handles team lead Approvals 
+app.use("/api/team-lead", teamLeadDashboardRoutes);
+// Handles team lead Approvals
 app.use("/api/team-lead", teamLeadApprovalRoutes);
 // Handles leave request APIs
 app.use("/api/leave-requests", leaveRoutes);
@@ -143,30 +138,30 @@ app.use("/api/password", passwordRoutes);
 // Registers all Team Lead leave approval APIs under /api/team-lead.
 app.use("/api/team-lead", teamLeadLeaveRoutes);
 // Registers Core Team dashboard APIs under /api/core-team.
-app.use("/api/core-team",coreTeamDashboardRoutes);
+app.use("/api/core-team", coreTeamDashboardRoutes);
 // Registers Core Team Analytics APIs under /api/core-team.
-app.use("/api/core-team",coreTeamAnalyticsRoutes);
+app.use("/api/core-team", coreTeamAnalyticsRoutes);
 // Registers Core Team Project Master APIs under /api/core-team.
-app.use("/api/core-team",coreTeamProjectMasterRoutes);
+app.use("/api/core-team", coreTeamProjectMasterRoutes);
 // Registers Core Team user-management APIs under /api/core-team.
-app.use("/api/core-team",coreTeamUserManagementRoutes);
+app.use("/api/core-team", coreTeamUserManagementRoutes);
 // Registers Core Team Assignment Matrix APIs under /api/core-team.
 app.use("/api/core-team", coreTeamAssignmentMatrixRoutes);
 
-app.use("/api/indexer/corrections",indexerCorrectionRoutes);
+app.use("/api/indexer/corrections", indexerCorrectionRoutes);
 
-app.use("/api/compliance",complianceRoutes);
+app.use("/api/compliance", complianceRoutes);
 
-app.use("/api/audit-logs",auditLogRoutes);
+app.use("/api/audit-logs", auditLogRoutes);
 // Mounts Administrator Daily Entry Locking Rules APIs.
 app.use("/api/admin", adminLockingRulesRoutes);
 
-app.use("/api/audit-logs",auditLogRoutes);
+app.use("/api/audit-logs", auditLogRoutes);
 
-app.use("/api/settings",settingsRoutes);
+app.use("/api/settings", settingsRoutes);
 
 // Registers Administrator dashboard APIs under /api/admin
-app.use("/api/admin",adminDashboardRoutes);
+app.use("/api/admin", adminDashboardRoutes);
 // Registers the global search API.
 app.use("/api/search", searchRoutes);
 
@@ -218,18 +213,13 @@ const runAutoLock = async () => {
     if (result.affectedRows > 0) {
       console.log(
         `Auto-lock: ${result.affectedRows} entr${
-          result.affectedRows === 1
-            ? "y"
-            : "ies"
-        } locked`
+          result.affectedRows === 1 ? "y" : "ies"
+        } locked`,
       );
     }
   } catch (error) {
     // Logs scheduler errors without stopping the backend server.
-    console.error(
-      "Auto-lock scheduler error:",
-      error
-    );
+    console.error("Auto-lock scheduler error:", error);
   }
 };
 
@@ -237,20 +227,14 @@ const runAutoLock = async () => {
 runAutoLock();
 
 // Runs the auto-lock check every 60 seconds.
-setInterval(
-  runAutoLock,
-  60 * 1000
-);
+setInterval(runAutoLock, 60 * 1000);
 
 // ============================================
 // SERVER
 // ============================================
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT;
 
 app.listen(PORT, () => {
-  console.log(
-    `ProdTrack Backend API running on http://localhost:${PORT}`
-  );
+  console.log(`ProdTrack Backend API running on https://api.prod.kavyaconsultancy.com`);
 });
-
