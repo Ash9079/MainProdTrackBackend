@@ -26,5 +26,10 @@ router.patch(
   authenticate,
   changeMyPassword
 );
+router.post(
+  "/me/password",
+  authenticate,
+  changeMyPassword
+);
 
 module.exports = router;

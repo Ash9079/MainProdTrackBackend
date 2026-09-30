@@ -1,29 +1,33 @@
-{
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const db = require("../config/db");
 const crypto = require("crypto");
 
-const {
-  sendPasswordEmail,
-} = require("../utils/mailer");
+const { sendPasswordEmail } = require("../utils/mailer");
 
-const {
-  getAppSetting,
-} = require("../utils/appSettings");
+const { getAppSetting } = require("../utils/appSettings");
+
+const { sendError } = require("../utils/httpError");
 
 const roleKeyMap = {
   indexer: "indexer",
   lead: "teamLead",
+  team_lead: "teamLead",
+  teamlead: "teamLead",
+  teamLead: "teamLead",
   core: "coreTeam",
+  core_team: "coreTeam",
+  coreteam: "coreTeam",
+  coreTeam: "coreTeam",
   admin: "administrator",
+  administrator: "administrator",
 };
 
 // Successful Indexer login par today's attendance Present mark karta hai.
 const markIndexerPresentOnLogin = async (user) => {
   try {
     // Sirf Indexer ki attendance automatically mark hogi.
-    if (user.role_code !== "indexer") {
+    if (String(user.role_code || "").toLowerCase() !== "indexer") {
       return;
     }
 
@@ -37,7 +41,7 @@ const markIndexerPresentOnLogin = async (user) => {
         AND CURDATE() BETWEEN start_date AND end_date
       LIMIT 1
       `,
-      [user.user_id]
+      [user.user_id],
     );
 
     // Approved leave hai toh Present mark nahi karna.
@@ -59,7 +63,7 @@ const markIndexerPresentOnLogin = async (user) => {
         AND a.att_date = CURDATE()
       LIMIT 1
       `,
-      [user.user_id]
+      [user.user_id],
     );
 
     // Leave/Holiday/Training jaise existing records overwrite nahi honge.
@@ -77,18 +81,18 @@ const markIndexerPresentOnLogin = async (user) => {
       FROM attendance_status
       WHERE code = 'present'
       LIMIT 1
-      `
+      `,
     );
 
     if (presentStatuses.length === 0) {
-      console.error(
-        "Login Attendance Error: Present status is not configured"
+      db.logError(
+        "Login attendance skipped: Present status is not configured",
+        new Error("attendance_status.code=present is missing"),
       );
       return;
     }
 
-    const presentStatusId =
-      presentStatuses[0].status_id;
+    const presentStatusId = presentStatuses[0].status_id;
 
     // Aaj ka record nahi hai toh create karega.
     // Absent record hai toh Present mein update karega.
@@ -118,17 +122,10 @@ const markIndexerPresentOnLogin = async (user) => {
         note = VALUES(note),
         approved_by = NULL
       `,
-      [
-        user.user_id,
-        presentStatusId,
-      ]
+      [user.user_id, presentStatusId],
     );
   } catch (error) {
-    // Attendance error ki wajah se login block nahi hoga.
-    console.error(
-      "Login Attendance Error:",
-      error
-    );
+    db.logError("Login attendance failed (login will still continue)", error);
   }
 };
 
@@ -139,14 +136,9 @@ const recordLoginEvent = async ({
   success = false,
 }) => {
   try {
-    const ipAddress =
-      req.ip ||
-      req.socket?.remoteAddress ||
-      null;
+    const ipAddress = req.ip || req.socket?.remoteAddress || null;
 
-    const userAgent = String(
-      req.headers["user-agent"] || ""
-    ).slice(0, 255);
+    const userAgent = String(req.headers["user-agent"] || "").slice(0, 255);
 
     await db.query(
       `
@@ -172,50 +164,34 @@ const recordLoginEvent = async ({
       `,
       [
         userId,
-        String(usernameTried || "")
-          .slice(0, 60),
+        String(usernameTried || "").slice(0, 60),
         success ? 1 : 0,
         ipAddress,
         userAgent || null,
-      ]
+      ],
     );
   } catch (error) {
-    // Login should continue even if event logging fails.
-    console.error(
-      "Login Event Error:",
-      error
-    );
+    db.logError("Login event insert failed (login will still continue)", error);
   }
 };
 
-const getSessionTimeoutMinutes =
-  async () => {
-    const [rows] = await db.query(
-      `
+const getSessionTimeoutMinutes = async () => {
+  const [rows] = await db.query(
+    `
       SELECT setting_value
       FROM app_setting
       WHERE setting_key =
         'session_timeout_minutes'
       LIMIT 1
-      `
-    );
+      `,
+  );
 
-    const timeoutMinutes = Number(
-      rows[0]?.setting_value
-    );
+  const timeoutMinutes = Number(rows[0]?.setting_value);
 
-    const allowedTimeouts = [
-      15,
-      30,
-      60,
-    ];
+  const allowedTimeouts = [15, 30, 60];
 
-    return allowedTimeouts.includes(
-      timeoutMinutes
-    )
-      ? timeoutMinutes
-      : 30;
-  };
+  return allowedTimeouts.includes(timeoutMinutes) ? timeoutMinutes : 30;
+};
 
 const login = async (req, res) => {
   try {
@@ -228,8 +204,8 @@ const login = async (req, res) => {
       });
     }
 
-      const [users] = await db.query(
-        `
+    const [users] = await db.query(
+      `
         SELECT
           u.user_id,
           u.emp_code,
@@ -251,10 +227,8 @@ const login = async (req, res) => {
         WHERE u.email = ? OR u.username = ?
         LIMIT 1
         `,
-        [email, email]
-      );
-
-    
+      [email, email],
+    );
 
     if (users.length === 0) {
       await recordLoginEvent({
@@ -262,12 +236,11 @@ const login = async (req, res) => {
         usernameTried: email,
         success: false,
       });
-     
+
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
       });
-      
     }
 
     const user = users[0];
@@ -285,42 +258,48 @@ const login = async (req, res) => {
       });
     }
 
-    const globalAuthMethod =
-  await getAppSetting(
-    "auth_method",
-    "both"
-  );
+    let globalAuthMethod = "both";
+    try {
+      globalAuthMethod = await getAppSetting("auth_method", "both");
+    } catch (error) {
+      db.logError("auth_method lookup failed; using both", error);
+    }
 
-const userAuthMethod =
-  user.auth_method || "both";
+    const userAuthMethod = user.auth_method || "both";
 
-const passwordLoginAllowed =
-  ["password", "both"].includes(
-    globalAuthMethod
-  ) &&
-  ["password", "both"].includes(
-    userAuthMethod
-  );
+    const passwordLoginAllowed =
+      ["password", "both"].includes(globalAuthMethod) &&
+      ["password", "both"].includes(userAuthMethod);
 
-if (!passwordLoginAllowed) {
-  await recordLoginEvent({
-    req,
-    userId: user.user_id,
-    usernameTried: email,
-    success: false,
-  });
+    if (!passwordLoginAllowed) {
+      await recordLoginEvent({
+        req,
+        userId: user.user_id,
+        usernameTried: email,
+        success: false,
+      });
 
-  return res.status(403).json({
-    success: false,
-    message:
-      "Password login is disabled. Please use Microsoft SSO.",
-  });
-}
+      return res.status(403).json({
+        success: false,
+        message: "Password login is disabled. Please use Microsoft SSO.",
+      });
+    }
 
-    const passwordMatches = await bcrypt.compare(
-      password,
-      user.password_hash
-    );
+    if (!user.password_hash) {
+      await recordLoginEvent({
+        req,
+        userId: user.user_id,
+        usernameTried: email,
+        success: false,
+      });
+
+      return res.status(401).json({
+        success: false,
+        message: "Invalid email or password",
+      });
+    }
+
+    const passwordMatches = await bcrypt.compare(password, user.password_hash);
 
     if (!passwordMatches) {
       await recordLoginEvent({
@@ -336,7 +315,7 @@ if (!passwordLoginAllowed) {
       });
     }
 
-    const roleKey = roleKeyMap[user.role_code];
+    const roleKey = roleKeyMap[String(user.role_code || "").toLowerCase()];
 
     if (!roleKey) {
       await recordLoginEvent({
@@ -351,11 +330,17 @@ if (!passwordLoginAllowed) {
       });
     }
 
-    const sessionTimeoutMinutes =
-    await getSessionTimeoutMinutes();
+    let sessionTimeoutMinutes = 30;
+    try {
+      sessionTimeoutMinutes = await getSessionTimeoutMinutes();
+    } catch (error) {
+      db.logError(
+        "session_timeout_minutes lookup failed; using default 30",
+        error,
+      );
+    }
 
     const token = jwt.sign(
-      
       {
         id: user.user_id,
         employeeId: user.emp_code,
@@ -363,9 +348,8 @@ if (!passwordLoginAllowed) {
       },
       process.env.JWT_SECRET,
       {
-        expiresIn:
-          process.env.JWT_EXPIRES_IN || "8h",
-      }
+        expiresIn: process.env.JWT_EXPIRES_IN || "8h",
+      },
     );
 
     await db.query(
@@ -374,7 +358,7 @@ if (!passwordLoginAllowed) {
       SET last_login_at = NOW()
       WHERE user_id = ?
       `,
-      [user.user_id]
+      [user.user_id],
     );
 
     await markIndexerPresentOnLogin(user);
@@ -406,44 +390,33 @@ if (!passwordLoginAllowed) {
       },
     });
   } catch (error) {
-    console.error("Login Error:", error);
-
-    return res.status(500).json({
-      success: false,
+    return sendError(res, error, {
+      context: "POST /api/auth/login",
       message: "Server error during login",
-      error: error.message,
     });
   }
-
 };
 
 const forgotPassword = async (req, res) => {
   let connection;
 
   try {
-    const identifier = String(
-      req.body?.email || ""
-    ).trim();
+    const identifier = String(req.body?.email || "").trim();
 
     if (!identifier) {
       return res.status(400).json({
         success: false,
-        message:
-          "Email or username is required",
+        message: "Email or username is required",
       });
     }
 
     // Check whether self-service reset is enabled
-    const passwordResetMethod =
-      await getAppSetting(
-        "password_reset",
-        "self_service"
-      );
+    const passwordResetMethod = await getAppSetting(
+      "password_reset",
+      "self_service",
+    );
 
-    if (
-      passwordResetMethod !==
-      "self_service"
-    ) {
+    if (passwordResetMethod !== "self_service") {
       return res.status(403).json({
         success: false,
         message:
@@ -465,14 +438,13 @@ const forgotPassword = async (req, res) => {
          OR username = ?
       LIMIT 1
       `,
-      [identifier, identifier]
+      [identifier, identifier],
     );
 
     if (users.length === 0) {
       return res.status(404).json({
         success: false,
-        message:
-          "No user was found with this email or username",
+        message: "No user was found with this email or username",
       });
     }
 
@@ -481,34 +453,24 @@ const forgotPassword = async (req, res) => {
     if (user.status !== "active") {
       return res.status(403).json({
         success: false,
-        message:
-          "This account is inactive",
+        message: "This account is inactive",
       });
     }
 
     if (!user.email) {
       return res.status(400).json({
         success: false,
-        message:
-          "No email is registered for this user",
+        message: "No email is registered for this user",
       });
     }
 
     // Generate actual new password
-    const newPassword =
-      `Prod@${crypto
-        .randomBytes(6)
-        .toString("base64url")}`;
+    const newPassword = `Prod@${crypto.randomBytes(6).toString("base64url")}`;
 
     // Store only its hash in database
-    const passwordHash =
-      await bcrypt.hash(
-        newPassword,
-        10
-      );
+    const passwordHash = await bcrypt.hash(newPassword, 10);
 
-    connection =
-      await db.getConnection();
+    connection = await db.getConnection();
 
     await connection.beginTransaction();
 
@@ -518,10 +480,7 @@ const forgotPassword = async (req, res) => {
       SET password_hash = ?
       WHERE user_id = ?
       `,
-      [
-        passwordHash,
-        user.user_id,
-      ]
+      [passwordHash, user.user_id],
     );
 
     // Send actual generated password by email
@@ -530,32 +489,23 @@ const forgotPassword = async (req, res) => {
       email: user.email,
       password: newPassword,
       passwordSource: "Forgot Password",
-      subject:
-        "Your new ProdTrack password",
+      subject: "Your new ProdTrack password",
     });
 
     await connection.commit();
 
     return res.status(200).json({
       success: true,
-      message:
-        "A new password has been sent to your registered email.",
+      message: "A new password has been sent to your registered email.",
     });
   } catch (error) {
     if (connection) {
       await connection.rollback();
     }
 
-    console.error(
-      "Forgot Password Error:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-      message:
-        "Failed to reset password",
-      error: error.message,
+    return sendError(res, error, {
+      context: "POST /api/auth/forgot-password",
+      message: "Failed to reset password",
     });
   } finally {
     if (connection) {
@@ -568,5 +518,3 @@ module.exports = {
   login,
   forgotPassword,
 };
-
-}

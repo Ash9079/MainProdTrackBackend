@@ -1,5 +1,6 @@
 // Imports the shared MySQL database connection pool.
 const db = require("../config/db");
+const { TEAM_LEAD_ROLE_SQL, INDEXER_ROLE_SQL } = require("../utils/roleSql");
 
 
 // ============================================================
@@ -112,7 +113,7 @@ const getTeamLeads = async (req, res) => {
       INNER JOIN role r
         ON r.role_id = u.role_id
 
-      WHERE r.code = 'lead'
+      WHERE ${TEAM_LEAD_ROLE_SQL}
         AND u.status = 'active'
 
       ORDER BY u.full_name ASC
@@ -293,7 +294,7 @@ const createProject = async (req, res) => {
           ON r.role_id = u.role_id
 
         WHERE u.user_id = ?
-          AND r.code = 'lead'
+          AND ${TEAM_LEAD_ROLE_SQL}
           AND u.status = 'active'
 
         LIMIT 1
@@ -367,6 +368,33 @@ const createProject = async (req, res) => {
           Number(teamLeadId),
           newProjectId,
           req.user?.id || null,
+        ]
+      );
+
+      await connection.query(
+        `
+        INSERT INTO project_assignment (
+          user_id,
+          project_id,
+          assigned_by
+        )
+        SELECT
+          u.user_id,
+          ?,
+          ?
+        FROM users u
+        INNER JOIN role r
+          ON r.role_id = u.role_id
+        WHERE u.team_lead_id = ?
+          AND u.status = 'active'
+          AND ${INDEXER_ROLE_SQL}
+        ON DUPLICATE KEY UPDATE
+          assigned_by = VALUES(assigned_by)
+        `,
+        [
+          newProjectId,
+          req.user?.id || null,
+          Number(teamLeadId),
         ]
       );
     }
@@ -609,7 +637,7 @@ const updateProject = async (req, res) => {
           ON r.role_id = u.role_id
 
         WHERE u.user_id = ?
-          AND r.code = 'lead'
+          AND ${TEAM_LEAD_ROLE_SQL}
           AND u.status = 'active'
 
         LIMIT 1
@@ -710,7 +738,7 @@ const updateProject = async (req, res) => {
           ON r.role_id = u.role_id
 
         WHERE pa.project_id = ?
-          AND r.code = 'lead'
+          AND ${TEAM_LEAD_ROLE_SQL}
         `,
         [projectId]
       );

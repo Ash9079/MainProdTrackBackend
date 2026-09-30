@@ -24,29 +24,23 @@ router.get(
   getPendingApprovals
 );
 
-// Approve correction request
-router.patch(
-  "/approvals/:id/approve",
+const approveCorrection = [
   authenticate,
-  allowRoles(
-    "teamLead",
-    "coreTeam",
-    "administrator"
-  ),
-  approveCorrectionRequest
-);
+  allowRoles("teamLead", "coreTeam", "administrator"),
+  approveCorrectionRequest,
+];
 
-// Reject correction request
-router.patch(
-  "/approvals/:id/reject",
+const rejectCorrection = [
   authenticate,
-  allowRoles(
-    "teamLead",
-    "coreTeam",
-    "administrator"
-  ),
-  rejectCorrectionRequest
-);
+  allowRoles("teamLead", "coreTeam", "administrator"),
+  rejectCorrectionRequest,
+];
+
+router.post("/approvals/:id/approve", ...approveCorrection);
+router.patch("/approvals/:id/approve", ...approveCorrection);
+
+router.post("/approvals/:id/reject", ...rejectCorrection);
+router.patch("/approvals/:id/reject", ...rejectCorrection);
 
 router.get(
   "/approvals/summary",

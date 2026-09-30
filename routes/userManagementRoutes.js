@@ -72,6 +72,12 @@ router.patch(
   allowRoles("coreTeam", "administrator"),
   updateUser
 );
+router.post(
+  "/users/:id",
+  authenticate,
+  allowRoles("coreTeam", "administrator"),
+  updateUser
+);
 
 
 // Exports the Core Team Users router so index.js can use it.

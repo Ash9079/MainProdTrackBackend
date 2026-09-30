@@ -30,5 +30,11 @@ router.patch(
   allowRoles("administrator"),
   updateSettings
 );
+router.post(
+  "/",
+  authenticate,
+  allowRoles("administrator"),
+  updateSettings
+);
 
 module.exports = router;

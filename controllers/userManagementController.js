@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { TEAM_LEAD_ROLE_SQL } = require("../utils/roleSql");
 const bcrypt = require("bcryptjs");
 const {
   sendPasswordEmail,
@@ -178,7 +179,7 @@ const getUserTeamLeads = async (req, res) => {
       INNER JOIN role r
         ON r.role_id = u.role_id
 
-      WHERE r.code = 'lead'
+      WHERE ${TEAM_LEAD_ROLE_SQL}
         AND u.status = 'active'
 
       ORDER BY u.full_name ASC
@@ -412,7 +413,7 @@ const createUser = async (req, res) => {
           ON r.role_id = u.role_id
 
         WHERE u.user_id = ?
-          AND r.code = 'lead'
+          AND ${TEAM_LEAD_ROLE_SQL}
           AND u.status = 'active'
 
         LIMIT 1
@@ -632,6 +633,7 @@ const updateUser = async (req, res) => {
     const userId = Number(req.params.id);
 
     const {
+      employeeId,
       name,
       username,
       email,
@@ -651,7 +653,16 @@ const updateUser = async (req, res) => {
         message: "Invalid user ID",
       });
     }
-
+    // Prevents Core Team or any other role from changing Employee ID.
+    if (
+      employeeId !== undefined &&
+      req.user?.role !== "administrator"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Only Administrator can change Employee ID",
+      });
+    }
 
     // --------------------------------------------------------
     // Check user exists
@@ -672,6 +683,39 @@ const updateUser = async (req, res) => {
         success: false,
         message: "User not found",
       });
+    }
+
+    // Validates Employee ID only when Administrator is changing it.
+    if (employeeId !== undefined) {
+      const normalizedEmployeeId = String(employeeId).trim();
+
+      // Employee ID cannot be empty.
+      if (!normalizedEmployeeId) {
+        return res.status(400).json({
+          success: false,
+          message: "Employee ID is required",
+        });
+      }
+
+      // Checks whether another user already has this Employee ID.
+      const [duplicateEmployeeId] = await db.query(
+        `
+        SELECT user_id
+        FROM users
+        WHERE emp_code = ?
+          AND user_id <> ?
+        LIMIT 1
+        `,
+        [normalizedEmployeeId, userId]
+      );
+
+      // Prevents duplicate Employee IDs.
+      if (duplicateEmployeeId.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Employee ID already exists",
+        });
+      }
     }
 
 
@@ -761,7 +805,7 @@ const updateUser = async (req, res) => {
             ON r.role_id = u.role_id
 
           WHERE u.user_id = ?
-            AND r.code = 'lead'
+            AND ${TEAM_LEAD_ROLE_SQL}
             AND u.status = 'active'
 
           LIMIT 1
@@ -837,6 +881,12 @@ const updateUser = async (req, res) => {
 
     const fields = [];
     const values = [];
+
+    // Updates Employee ID only when it was supplied by Administrator.
+    if (employeeId !== undefined) {
+      fields.push("emp_code = ?");
+      values.push(String(employeeId).trim());
+    }
 
 
     if (name !== undefined) {

@@ -36,9 +36,31 @@ router.patch(
   ),
   markAllAsRead
 );
+router.post(
+  "/read-all",
+  authenticate,
+   allowRoles(
+    "indexer",
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
+  markAllAsRead
+);
 
 // Marks one notification as read
 router.patch(
+  "/:id/read",
+  authenticate,
+   allowRoles(
+    "indexer",
+    "teamLead",
+    "coreTeam",
+    "administrator"
+  ),
+  markAsRead
+);
+router.post(
   "/:id/read",
   authenticate,
    allowRoles(

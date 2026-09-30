@@ -32,6 +32,12 @@ router.put(
   allowRoles("administrator"),
   updateLockingRules
 );
+router.post(
+  "/locking-rules",
+  authenticate,
+  allowRoles("administrator"),
+  updateLockingRules
+);
 
 // Exports the router for use by the main backend application.
 module.exports = router;

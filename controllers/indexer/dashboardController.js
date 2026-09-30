@@ -10,7 +10,8 @@ const getIndexerDashboard = async (req, res) => {
       SELECT
         COALESCE(SUM(docs_received), 0)  AS total_received,
         COALESCE(SUM(docs_completed), 0) AS total_completed,
-        COALESCE(SUM(docs_received - docs_completed), 0) AS total_pending
+        -- Calculates pending safely when completed can be greater than received.
+          COALESCE(SUM(GREATEST(CAST(docs_received AS SIGNED) - CAST(docs_completed AS SIGNED),0)),0) AS total_pending
       FROM daily_entry
       WHERE user_id = ?
       `,

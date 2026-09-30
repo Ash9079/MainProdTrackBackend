@@ -64,6 +64,12 @@ router.patch(
   allowRoles("coreTeam", "administrator"),
   updateProject
 );
+router.post(
+  "/projects/:id",
+  authenticate,
+  allowRoles("coreTeam", "administrator"),
+  updateProject
+);
 
 router.get(
   "/projects/reporting-categories",

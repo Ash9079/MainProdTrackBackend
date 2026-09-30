@@ -315,10 +315,11 @@ if (role === "teamLead") {
       reject(409, "Correction request changed. Refresh and try again");
     }
 
-    // Allowed daily-entry fields that can be corrected.
+// Allows corrections only to fields entered by Indexers.
 const editableFields = {
-  docs_received: "docs_received",
   docs_completed: "docs_completed",
+  batches_processed: "batches_processed",
+  errors_flagged: "errors_flagged",
 };
 
 const requestedField = String(
@@ -350,29 +351,6 @@ if (
   );
 }
 
-// Completed documents cannot exceed received documents.
-if (
-  requestedField === "docs_completed" &&
-  correctedValue >
-    Number(requests[0].docs_received)
-) {
-  reject(
-    400,
-    "Completed documents cannot exceed received documents"
-  );
-}
-
-// Received documents cannot be less than completed documents.
-if (
-  requestedField === "docs_received" &&
-  correctedValue <
-    Number(requests[0].docs_completed)
-) {
-  reject(
-    400,
-    "Received documents cannot be less than completed documents"
-  );
-}
 
 const [dailyEntryResult] =
   await connection.query(

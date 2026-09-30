@@ -47,10 +47,10 @@ const getAdminDashboard = async (req, res) => {
     // Calculate percentage for progress bar (backlog / total_received * 100)
     const maxBacklog = Math.max(...backlogRows.map((r) => Number(r.backlog)), 1);
     const backlog = backlogRows.map((r) => ({
-      name:     r.name,
-      total:    Number(r.backlog),
+      name: r.name,
+      total: Number(r.backlog),
       received: Number(r.total_received),
-      pct:      Number(r.total_received) > 0
+      pct: Number(r.total_received) > 0
         ? Math.round((Number(r.backlog) / Number(r.total_received)) * 100)
         : 0,
       barPct: Math.round((Number(r.backlog) / maxBacklog) * 100),
@@ -80,8 +80,8 @@ const getAdminDashboard = async (req, res) => {
                           AND ga.user_id    = pa.user_id
     `);
 
-    const totalPairs = Number(complianceRows[0].total_pairs)  || 0;
-    const ackedPairs = Number(complianceRows[0].acked_pairs)  || 0;
+    const totalPairs = Number(complianceRows[0].total_pairs) || 0;
+    const ackedPairs = Number(complianceRows[0].acked_pairs) || 0;
     const complianceRate = totalPairs > 0
       ? Math.round((ackedPairs / totalPairs) * 100)
       : 100;
@@ -123,11 +123,11 @@ const getAdminDashboard = async (req, res) => {
       success: true,
       dashboard: {
         // Stat cards
-        totalReceived:    Number(prodRows[0].total_received),
-        totalCompleted:   Number(prodRows[0].total_completed),
-        totalBacklog:     Number(prodRows[0].total_backlog),
-        activeEmployees:  Number(employeeRows[0].active_employees),
-        activeProjects:   Number(projectCountRows[0].active_projects),
+        totalReceived: Number(prodRows[0].total_received),
+        totalCompleted: Number(prodRows[0].total_completed),
+        totalBacklog: Number(prodRows[0].total_backlog),
+        activeEmployees: Number(employeeRows[0].active_employees),
+        activeProjects: Number(projectCountRows[0].active_projects),
 
         // Backlog by project
         backlogByProject: backlog,
@@ -135,17 +135,17 @@ const getAdminDashboard = async (req, res) => {
         // KPI cards
         pendingCorrections: Number(corrRows[0].pending_corrections),
         guideCompliance: {
-          rate:    complianceRate,
-          acked:   ackedPairs,
-          total:   totalPairs,
+          rate: complianceRate,
+          acked: ackedPairs,
+          total: totalPairs,
         },
         missingEntriesToday: Number(missingRows[0].missing_entries),
 
         // Monthly trend
         monthlyTrend: trendRows.map((r) => ({
           monthLabel: r.month_label,
-          completed:  Number(r.completed),
-          received:   Number(r.received),
+          completed: Number(r.completed),
+          received: Number(r.received),
         })),
       },
     });

@@ -1,16 +1,12 @@
-// Imports the database connection.
 const db = require("../../config/db");
+const { sendError } = require("../../utils/httpError");
 
-
-// Gets all pending leave requests belonging to the Team Lead's team.
 const getPendingLeaveRequests = async (req, res) => {
   try {
-    // Gets the logged-in Team Lead's user ID from the JWT token.
     const teamLeadId = req.user.id;
 
-    // Gets pending leave requests only from employees under this Team Lead.
-  const [requests] = await db.query(
-  `
+    const [requests] = await db.query(
+      `
   SELECT
     lr.leave_request_id AS id,
     lr.leave_request_id,
@@ -48,43 +44,32 @@ const getPendingLeaveRequests = async (req, res) => {
     lr.created_at DESC,
     lr.leave_request_id DESC
   `,
-  [teamLeadId, teamLeadId]
-);
+      [teamLeadId, teamLeadId],
+    );
 
-    // Returns all pending leave requests to the Team Lead.
     return res.status(200).json({
       success: true,
       count: requests.length,
       requests,
     });
-
   } catch (error) {
-    // Logs the actual database/server error in the backend terminal.
-    console.error("Get Pending Leave Requests Error:", error);
-
-    // Returns an error response if pending leave requests cannot be loaded.
-    return res.status(500).json({
-      success: false,
+    return sendError(res, error, {
+      context: "GET /team-lead/leave-requests",
       message: "Failed to load pending leave requests",
-      error: error.message,
     });
   }
 };
 
-
-// Approves a pending leave request and notifies the employee.
 const approveLeaveRequest = async (req, res) => {
   let connection;
+  let transactionStarted = false;
 
   try {
     const teamLeadId = req.user.id;
     const leaveRequestId = Number(req.params.id);
     const { reviewComment = "" } = req.body || {};
 
-    if (
-      !Number.isSafeInteger(leaveRequestId) ||
-      leaveRequestId <= 0
-    ) {
+    if (!Number.isSafeInteger(leaveRequestId) || leaveRequestId <= 0) {
       return res.status(400).json({
         success: false,
         message: "A valid leave request ID is required",
@@ -93,6 +78,7 @@ const approveLeaveRequest = async (req, res) => {
 
     connection = await db.getConnection();
     await connection.beginTransaction();
+    transactionStarted = true;
 
     const reject = (httpStatus, message) => {
       throw Object.assign(new Error(message), {
@@ -127,86 +113,63 @@ const approveLeaveRequest = async (req, res) => {
         AND u.status = 'active'
 
       LIMIT 1
-      FOR UPDATE
       `,
-      [
-        leaveRequestId,
-        teamLeadId,
-        teamLeadId,
-      ]
+      [leaveRequestId, teamLeadId, teamLeadId],
     );
 
     if (requests.length === 0) {
-      reject(
-        404,
-        "Leave request not found or cannot be approved"
-      );
+      reject(404, "Leave request not found or cannot be approved");
     }
 
     const request = requests[0];
 
     if (request.status !== "PENDING") {
-      reject(
-        409,
-        "Leave request has already been reviewed"
-      );
+      reject(409, "Leave request has already been reviewed");
     }
 
-    const [attendanceStatuses] =
-      await connection.query(
-        `
+    const leaveType = String(request.leave_type || "").trim();
+    const leaveTypeKey = leaveType.toLowerCase().replace(/\s+/g, "_");
+
+    const [attendanceStatuses] = await connection.query(
+      `
         SELECT status_id
         FROM attendance_status
         WHERE is_leave = 1
           AND (
             code = ?
             OR name = ?
+            OR LOWER(REPLACE(code, ' ', '_')) = ?
+            OR LOWER(REPLACE(name, ' ', '_')) = ?
           )
         LIMIT 1
         `,
-        [
-          request.leave_type,
-          request.leave_type,
-        ]
-      );
+      [leaveType, leaveType, leaveTypeKey, leaveTypeKey],
+    );
 
     if (attendanceStatuses.length === 0) {
-      reject(
-        400,
-        "Attendance leave status is not configured"
-      );
+      reject(400, "Attendance leave status is not configured");
     }
 
-    const startDate = new Date(
-      `${request.start_date}T00:00:00Z`
-    );
+    const startDate = new Date(`${request.start_date}T00:00:00Z`);
+    const endDate = new Date(`${request.end_date}T00:00:00Z`);
 
-    const endDate = new Date(
-      `${request.end_date}T00:00:00Z`
-    );
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      reject(400, "Leave request has invalid dates");
+    }
 
     const leaveDates = [];
     const currentDate = new Date(startDate);
 
     while (currentDate <= endDate) {
-      leaveDates.push(
-        currentDate.toISOString().slice(0, 10)
-      );
-
-      currentDate.setUTCDate(
-        currentDate.getUTCDate() + 1
-      );
+      leaveDates.push(currentDate.toISOString().slice(0, 10));
+      currentDate.setUTCDate(currentDate.getUTCDate() + 1);
 
       if (leaveDates.length > 366) {
-        reject(
-          400,
-          "Leave duration cannot exceed 366 days"
-        );
+        reject(400, "Leave duration cannot exceed 366 days");
       }
     }
 
-    const leaveStatusId =
-      attendanceStatuses[0].status_id;
+    const leaveStatusId = attendanceStatuses[0].status_id;
 
     for (const attendanceDate of leaveDates) {
       await connection.query(
@@ -234,13 +197,12 @@ const approveLeaveRequest = async (req, res) => {
           leaveStatusId,
           `Approved ${request.leave_type}`,
           teamLeadId,
-        ]
+        ],
       );
     }
 
-    const [updateResult] =
-      await connection.query(
-        `
+    const [updateResult] = await connection.query(
+      `
         UPDATE leave_request
         SET
           status = 'APPROVED',
@@ -250,18 +212,11 @@ const approveLeaveRequest = async (req, res) => {
         WHERE leave_request_id = ?
           AND status = 'PENDING'
         `,
-        [
-          reviewComment.trim() || null,
-          teamLeadId,
-          leaveRequestId,
-        ]
-      );
+      [String(reviewComment || "").trim() || null, teamLeadId, leaveRequestId],
+    );
 
     if (updateResult.affectedRows !== 1) {
-      reject(
-        409,
-        "Leave request changed. Refresh and try again"
-      );
+      reject(409, "Leave request changed. Refresh and try again");
     }
 
     await connection.query(
@@ -282,34 +237,54 @@ const approveLeaveRequest = async (req, res) => {
         "leave_request",
         String(leaveRequestId),
         `Approved leave for user ${request.user_id} from ${request.start_date} to ${request.end_date}`,
-      ]
+      ],
+    );
+
+    await connection.query(
+      `
+      INSERT INTO notification
+      (
+        user_id,
+        title,
+        body,
+        is_read
+      )
+      VALUES (?, ?, ?, 0)
+      `,
+      [
+        request.user_id,
+        "Leave request approved",
+        "Your leave request has been approved by your Team Lead.",
+      ],
     );
 
     await connection.commit();
+    transactionStarted = false;
 
     return res.status(200).json({
       success: true,
-      message:
-        "Leave request approved and attendance updated successfully",
+      message: "Leave request approved and attendance updated successfully",
     });
   } catch (error) {
-    if (connection) {
-      await connection.rollback();
+    if (connection && transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("Approve leave rollback error:", rollbackError);
+      }
     }
 
-    console.error(
-      "Approve Leave Request Error:",
-      error
-    );
-
-    return res
-      .status(error.httpStatus || 500)
-      .json({
+    if (error.httpStatus) {
+      return res.status(error.httpStatus).json({
         success: false,
-        message: error.httpStatus
-          ? error.message
-          : "Failed to approve leave request",
+        message: error.message,
       });
+    }
+
+    return sendError(res, error, {
+      context: "POST /team-lead/leave-requests/:id/approve",
+      message: "Failed to approve leave request",
+    });
   } finally {
     if (connection) {
       connection.release();
@@ -317,22 +292,14 @@ const approveLeaveRequest = async (req, res) => {
   }
 };
 
-
-// Rejects a pending leave request and notifies the employee.
 const rejectLeaveRequest = async (req, res) => {
   try {
-    // Gets the logged-in Team Lead's ID.
     const teamLeadId = req.user.id;
-
-    // Gets the leave request ID from the URL.
     const leaveRequestId = req.params.id;
+    const { reviewComment } = req.body || {};
 
-    // Gets the optional rejection comment.
-    const { reviewComment } = req.body;
-
-    // Checks that the leave belongs to an employee under this Team Lead.
-   const [requests] = await db.query(
-  `
+    const [requests] = await db.query(
+      `
       SELECT
         lr.leave_request_id,
         lr.user_id,
@@ -349,10 +316,9 @@ const rejectLeaveRequest = async (req, res) => {
 
       LIMIT 1
       `,
-      [leaveRequestId, teamLeadId]
+      [leaveRequestId, teamLeadId],
     );
 
-    // Stops if the leave request cannot be found for this Team Lead.
     if (requests.length === 0) {
       return res.status(404).json({
         success: false,
@@ -360,7 +326,6 @@ const rejectLeaveRequest = async (req, res) => {
       });
     }
 
-    // Prevents an already reviewed leave request from being rejected again.
     if (requests[0].status !== "PENDING") {
       return res.status(400).json({
         success: false,
@@ -368,7 +333,6 @@ const rejectLeaveRequest = async (req, res) => {
       });
     }
 
-    // Changes the leave request status from PENDING to REJECTED.
     await db.query(
       `
       UPDATE leave_request
@@ -380,55 +344,39 @@ const rejectLeaveRequest = async (req, res) => {
       WHERE leave_request_id = ?
         AND status = 'PENDING'
       `,
-      [
-        reviewComment || null,
-        teamLeadId,
-        leaveRequestId,
-      ]
+      [reviewComment || null, teamLeadId, leaveRequestId],
     );
 
-    // Creates an unread rejection notification for the employee.
     await db.query(
       `
-     
+      INSERT INTO notification
       (
         user_id,
-        type,
         title,
-        message,
+        body,
         is_read
       )
-      VALUES (?, ?, ?, ?, 0)
+      VALUES (?, ?, ?, 0)
       `,
       [
         requests[0].user_id,
-        "GENERAL",
         "Leave request rejected",
         "Your leave request has been rejected by your Team Lead.",
-      ]
+      ],
     );
 
-    // Returns success after rejecting the leave request.
     return res.status(200).json({
       success: true,
       message: "Leave request rejected successfully",
     });
-
   } catch (error) {
-    // Logs rejection errors in the backend terminal.
-    console.error("Reject Leave Request Error:", error);
-
-    // Returns an error response if rejection fails.
-    return res.status(500).json({
-      success: false,
+    return sendError(res, error, {
+      context: "POST /team-lead/leave-requests/:id/reject",
       message: "Failed to reject leave request",
-      error: error.message,
     });
   }
 };
 
-
-// Exports the controller functions so the routes can use them.
 module.exports = {
   getPendingLeaveRequests,
   approveLeaveRequest,

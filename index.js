@@ -1,179 +1,244 @@
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const morgan = require("morgan");
 
-dotenv.config();
+dotenv.config({ path: path.join(__dirname, ".env") });
+
+const { writeLog, logsDir } = require("./utils/fileLogger");
+
+const passenger =
+  typeof globalThis.PhusionPassenger !== "undefined"
+    ? globalThis.PhusionPassenger
+    : null;
+
+if (passenger) {
+  passenger.configure({ autoInstall: false });
+}
+
+const requiredEnv = [
+  "DB_HOST",
+  "DB_USER",
+  "DB_PASSWORD",
+  "DB_NAME",
+  "JWT_SECRET",
+];
+
+if (!passenger) {
+  requiredEnv.push("PORT");
+}
+
+const missingEnv = requiredEnv.filter((key) => {
+  const value = process.env[key];
+  return value === undefined || String(value).trim() === "";
+});
+
+if (missingEnv.length > 0) {
+  writeLog(
+    "app-error.log",
+    "FATAL",
+    `[BOOT] Missing required environment variables: ${missingEnv.join(", ")}`,
+  );
+  writeLog(
+    "app-error.log",
+    "FATAL",
+    "[BOOT] Set them in backend/.env on the CWP server, then restart the Node app.",
+  );
+  process.exit(1);
+}
+
+if (
+  process.env.JWT_SECRET === "change_this_to_a_long_random_secret_on_cwp" ||
+  process.env.JWT_SECRET === "your_secure_random_secret" ||
+  String(process.env.JWT_SECRET).length < 32
+) {
+  writeLog(
+    "app.log",
+    "WARN",
+    "[BOOT] JWT_SECRET is too short or still a placeholder. Use at least 32 random characters in production.",
+  );
+}
 
 const db = require("./config/db");
+const { ensureProjectVisibility } = require("./utils/ensureSchema");
+const { sendError } = require("./utils/httpError");
 const authRoutes = require("./routes/authRoutes");
 
 const app = express();
 const dashboardRoutes = require("./routes/indexer/dashboardRoutes");
-// Imports Project routes
 const projectRoutes = require("./routes/projectRoutes");
-// Imports dailyEntry routes
 const dailyEntryRoutes = require("./routes/dailyEntryRoutes");
-// Imports guideRoutes routes
 const guideRoutes = require("./routes/guideRoutes");
-// Imports correction request routes
 const correctionRoutes = require("./routes/indexer/correctionRoutes");
-// Imports attendance routes
 const attendanceRoutes = require("./routes/attendanceRoutes");
-// Imports notification routes
 const notificationRoutes = require("./routes/notificationRoutes");
-// Imports profile routes
 const profileRoutes = require("./routes/profileRoutes");
-// Imports report routes
 const reportRoutes = require("./routes/reportRoutes");
-// Imports Team Lead team routes
 const teamRoutes = require("./routes/teamLead/teamRoutes");
-//handle teamlead dashbaords
 const teamLeadDashboardRoutes = require("./routes/teamLead/dashboardRoutes");
-//
 const teamLeadApprovalRoutes = require("./routes/teamLead/approvalRoutes");
-//Imports leave routes
 const leaveRoutes = require("./routes/leaveRoutes");
-//password reset routes
 const passwordRoutes = require("./routes/passwordRoutes");
-// Imports the Team Lead leave approval routes.
 const teamLeadLeaveRoutes = require("./routes/teamLead/leaveApprovalRoutes");
-// Imports Core Team dashboard routes.
 const coreTeamDashboardRoutes = require("./routes/coreTeam/dashboardRoutes");
-// Imports Core Team Analytics routes.
 const coreTeamAnalyticsRoutes = require("./routes/analyticsRoutes");
-// Imports Core Team Project Master routes.
 const coreTeamProjectMasterRoutes = require("./routes/projectMasterRoutes");
-// Imports Core Team user-management routes.
 const coreTeamUserManagementRoutes = require("./routes/userManagementRoutes");
-// Imports Core Team Assignment Matrix routes.
 const coreTeamAssignmentMatrixRoutes = require("./routes/coreTeam/assignmentMatrixRoutes");
 const indexerCorrectionRoutes = require("./routes/indexer/correctionRoutes");
 const complianceRoutes = require("./routes/complianceRoutes");
 const auditLogRoutes = require("./routes/auditLogRoutes");
-// Imports Administrator Daily Entry Locking Rules routes.
 const adminLockingRulesRoutes = require("./routes/administrator/lockingRulesRoutes");
 const settingsRoutes = require("./routes/settingsRoutes");
-
-// Imports Administrator dashboard routes
 const adminDashboardRoutes = require("./routes/administrator/dashboardRoutes");
-// Imports global search routes.
 const searchRoutes = require("./routes/searchRoutes");
 
-// ============================================
-// MIDDLEWARE
-// ============================================
+app.set("trust proxy", 1);
 
-app.use(cors());
+// ── CORS ──────────────────────────────────────────────────────
+// In production allow only the known frontend origin.
+// In development also allow localhost on any port.
+const ALLOWED_ORIGINS = [
+  "https://prod.kavyaconsultancy.com",
+  "https://prod.kavyaconsultancy.com/",
+  "https://www.prod.kavyaconsultancy.com",
+  "https://www.prod.kavyaconsultancy.com/",
+  "http://prod.kavyaconsultancy.com",
+  "http://www.prod.kavyaconsultancy.com",
+];
 
-app.use(express.json());
+const isLocalOrigin = (origin) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 
-// ============================================
-// BASIC TEST ROUTE
-// ============================================
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no Origin header (same-origin, Postman, health checks).
+    if (!origin) return callback(null, true);
+    // Always allow local Vite/dev origins, even if NODE_ENV=production in .env.
+    if (isLocalOrigin(origin)) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin '${origin}' is not allowed`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Authorization",
+    "Content-Type",
+    "Accept",
+    "X-HTTP-Method-Override",
+  ],
+  maxAge: 86400,
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
+
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+// CWP Apache often drops PUT/PATCH/DELETE. The frontend sends POST with this header.
+app.use((req, _res, next) => {
+  const override = String(req.headers["x-http-method-override"] || "").toUpperCase();
+  if (req.method === "POST" && ["PUT", "PATCH", "DELETE"].includes(override)) {
+    req.method = override;
+  }
+  next();
+});
+
+app.use(
+  morgan(":method :url :status :res[content-length] - :response-time ms"),
+);
 
 app.get("/", (req, res) => {
+  // In production keep the root response minimal — don't leak env/passenger info.
   res.json({
     success: true,
     message: "ProdTrack Backend API is running",
   });
 });
 
-// ============================================
-// MYSQL TEST ROUTE
-// ============================================
+app.get("/api/health/live", (req, res) => {
+  res.json({
+    success: true,
+    api: "up",
+    timestamp: new Date().toISOString(),
+  });
+});
 
-app.get("/api/test-db", async (req, res) => {
+app.get("/api/health", async (req, res) => {
   try {
-    const [rows] = await db.query("SELECT 1 + 1 AS result");
-
+    const [rows] = await db.query("SELECT 1 AS ok");
     res.json({
       success: true,
-      message: "MySQL connected successfully",
-      result: rows[0].result,
+      api: "up",
+      database: rows[0]?.ok === 1 ? "up" : "unknown",
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error(error);
-
-    res.status(500).json({
-      success: false,
-      message: "Database connection failed",
-      error: error.message,
+    return sendError(res, error, {
+      context: "GET /api/health",
+      message: "Database health check failed",
+      status: 503,
+      extra: {
+        api: "up",
+        database: "down",
+      },
     });
   }
 });
 
-// ============================================
-// API ROUTES
-// ============================================
-// Authentication
+// /api/test-db is only available outside production to avoid leaking DB info.
+if (process.env.NODE_ENV !== "production") {
+  app.get("/api/test-db", async (req, res) => {
+    try {
+      const [rows] = await db.query("SELECT 1 + 1 AS result");
+      res.json({
+        success: true,
+        message: "MySQL connected successfully",
+        result: rows[0].result,
+      });
+    } catch (error) {
+      return sendError(res, error, {
+        context: "GET /api/test-db",
+        message: "Database connection failed",
+        status: 500,
+      });
+    }
+  });
+}
+
 app.use("/api/auth", authRoutes);
-// Projects
 app.use("/api/projects", projectRoutes);
-// Daily production entries
 app.use("/api/daily-entries", dailyEntryRoutes);
-// Guides and acknowledgement
 app.use("/api/guides", guideRoutes);
-// Handles correction request APIs
 app.use("/api/corrections", correctionRoutes);
-// Handles attendance APIs
 app.use("/api/attendance", attendanceRoutes);
-// Handles notification APIs
 app.use("/api/notifications", notificationRoutes);
-// Handles profile APIs
 app.use("/api/profile", profileRoutes);
-// Handles report APIs
 app.use("/api/reports", reportRoutes);
-// Handles dashboard APIs
 app.use("/api/dashboard", dashboardRoutes);
-// Handles Team Lead team APIs
 app.use("/api/team-lead", teamRoutes);
-// Handles Team Lead Dashboards APIs
 app.use("/api/team-lead", teamLeadDashboardRoutes);
-// Handles team lead Approvals
 app.use("/api/team-lead", teamLeadApprovalRoutes);
-// Handles leave request APIs
 app.use("/api/leave-requests", leaveRoutes);
-// Handles resetpassword APIs
 app.use("/api/password", passwordRoutes);
-// Registers all Team Lead leave approval APIs under /api/team-lead.
 app.use("/api/team-lead", teamLeadLeaveRoutes);
-// Registers Core Team dashboard APIs under /api/core-team.
 app.use("/api/core-team", coreTeamDashboardRoutes);
-// Registers Core Team Analytics APIs under /api/core-team.
 app.use("/api/core-team", coreTeamAnalyticsRoutes);
-// Registers Core Team Project Master APIs under /api/core-team.
 app.use("/api/core-team", coreTeamProjectMasterRoutes);
-// Registers Core Team user-management APIs under /api/core-team.
 app.use("/api/core-team", coreTeamUserManagementRoutes);
-// Registers Core Team Assignment Matrix APIs under /api/core-team.
 app.use("/api/core-team", coreTeamAssignmentMatrixRoutes);
-
 app.use("/api/indexer/corrections", indexerCorrectionRoutes);
-
 app.use("/api/compliance", complianceRoutes);
-
 app.use("/api/audit-logs", auditLogRoutes);
-// Mounts Administrator Daily Entry Locking Rules APIs.
 app.use("/api/admin", adminLockingRulesRoutes);
-
-app.use("/api/audit-logs", auditLogRoutes);
-
 app.use("/api/settings", settingsRoutes);
-
-// Registers Administrator dashboard APIs under /api/admin
 app.use("/api/admin", adminDashboardRoutes);
-// Registers the global search API.
 app.use("/api/search", searchRoutes);
 
-// ============================================
-// AUTO-LOCK SCHEDULER
-// ============================================
-
-// Checks every minute whether submitted/reviewed entries have reached
-// their project's configured auto-lock time plus grace period.
 const runAutoLock = async () => {
   try {
-    // Locks today's eligible entries when their configured lock time has passed.
     const [result] = await db.query(`
       UPDATE daily_entry de
 
@@ -209,32 +274,153 @@ const runAutoLock = async () => {
         )
     `);
 
-    // Logs only when at least one entry was automatically locked.
     if (result.affectedRows > 0) {
-      console.log(
-        `Auto-lock: ${result.affectedRows} entr${
-          result.affectedRows === 1 ? "y" : "ies"
+      writeLog(
+        "app.log",
+        "INFO",
+        `Auto-lock: ${result.affectedRows} entr${result.affectedRows === 1 ? "y" : "ies"
         } locked`,
       );
     }
   } catch (error) {
-    // Logs scheduler errors without stopping the backend server.
-    console.error("Auto-lock scheduler error:", error);
+    if (typeof db.logError === "function") {
+      db.logError("Auto-lock scheduler query failed", error);
+    } else {
+      writeLog(
+        "app-error.log",
+        "ERROR",
+        `Auto-lock scheduler error: ${error.message}`,
+      );
+    }
   }
 };
 
-// Runs the auto-lock check once when the backend starts.
 runAutoLock();
-
-// Runs the auto-lock check every 60 seconds.
 setInterval(runAutoLock, 60 * 1000);
 
-// ============================================
-// SERVER
-// ============================================
-
-const PORT = process.env.PORT;
-
-app.listen(PORT, () => {
-  console.log(`ProdTrack Backend API running on https://api.prod.kavyaconsultancy.com`);
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.method} ${req.originalUrl}`,
+  });
 });
+
+app.use((err, req, res, next) => {
+  let status = Number(err.status || err.statusCode || 500);
+  let message =
+    status >= 500 ? "Internal server error" : err.message || "Request failed";
+
+  if (err.type === "entity.parse.failed" || err instanceof SyntaxError) {
+    status = 400;
+    message = "Invalid JSON in request body";
+  }
+
+  if (err.code === "LIMIT_FILE_SIZE") {
+    status = 400;
+    message = "Uploaded file is too large";
+  }
+
+  if (res.headersSent) {
+    writeLog(
+      "app-error.log",
+      "ERROR",
+      `[API ERROR] ${req.method} ${req.originalUrl} (headers already sent)`,
+      {
+        status,
+        message: err.message,
+      },
+    );
+    return next(err);
+  }
+
+  return sendError(res, err, {
+    context: `${req.method} ${req.originalUrl}`,
+    message,
+    status,
+  });
+});
+
+process.on("uncaughtException", (error) => {
+  writeLog(
+    "app-error.log",
+    "FATAL",
+    `[FATAL] uncaughtException: ${error.message}`,
+    {
+      name: error.name,
+      code: error.code,
+      stack: error.stack,
+    },
+  );
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  writeLog("app-error.log", "FATAL", `[FATAL] unhandledRejection: ${message}`, {
+    reason: reason instanceof Error ? reason.stack : reason,
+  });
+});
+
+const PORT = Number(process.env.PORT) || 4400;
+const HOST = process.env.HOST || "0.0.0.0";
+
+const onListening = () => {
+  writeLog(
+    "app.log",
+    "INFO",
+    `[BOOT] ProdTrack API started | node=${process.version} passenger=${Boolean(
+      passenger,
+    )} cwd=${process.cwd()} logs=${logsDir}`,
+  );
+  writeLog(
+    "app.log",
+    "INFO",
+    passenger
+      ? "[BOOT] Listening via Phusion Passenger (CWP Node.js Selector)"
+      : `[BOOT] Listening on http://${HOST}:${PORT}`,
+  );
+  writeLog(
+    "app.log",
+    "INFO",
+    "[BOOT] Health: GET /api/health/live | DB: GET /api/health | GET /api/test-db",
+  );
+};
+
+const bindServer = () =>
+  passenger
+    ? app.listen("passenger", onListening)
+    : app.listen(PORT, HOST, onListening);
+
+const startServer = async () => {
+  try {
+    await ensureProjectVisibility(db);
+  } catch (error) {
+    writeLog(
+      "db-error.log",
+      "ERROR",
+      `[DB] Could not repair project visibility view: ${error.message}`,
+    );
+  }
+
+  const server = bindServer();
+
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      writeLog(
+        "app-error.log",
+        "FATAL",
+        `[BOOT] Port ${PORT} is already in use. Change PORT in .env or stop the other process.`,
+      );
+    } else {
+      writeLog(
+        "app-error.log",
+        "FATAL",
+        `[BOOT] Server failed to start: ${error.message}`,
+        { code: error.code, stack: error.stack },
+      );
+    }
+    process.exit(1);
+  });
+};
+
+startServer();

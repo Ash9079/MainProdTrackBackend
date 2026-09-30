@@ -303,16 +303,14 @@ const createEntry = async (req, res) => {
         message: "Project and production date are required",
       });
     }
-
+    const received = 0;
     // Converts the four current production fields into numbers.
-    const received = Number(documentsReceived || 0);
     const completed = Number(documentsCompleted || 0);
     const processed = Number(batchesProcessed || 0);
     const errors = Number(errorsFlagged || 0);
 
     // Groups all production numeric values for common validation.
     const numericValues = [
-      received,
       completed,
       processed,
       errors,
@@ -331,15 +329,6 @@ const createEntry = async (req, res) => {
         success: false,
         message:
           "Production values must be non-negative whole numbers",
-      });
-    }
-
-    // Prevents completed documents from being greater than received documents.
-    if (completed > received) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Completed documents cannot exceed received documents",
       });
     }
 
@@ -939,10 +928,10 @@ const updateEntry = async (req, res) => {
 
     // Normalizes the requested workflow status.
     const statusCode = String(status).toLowerCase();
-
+    // Documents received is no longer entered by the Indexer.
+    const received = 0;
     // Converts the four current production fields into numbers.
     const numbers = [
-      documentsReceived,
       documentsCompleted,
       batchesProcessed,
       errorsFlagged,
@@ -950,7 +939,6 @@ const updateEntry = async (req, res) => {
 
     // Stores the normalized production values for easier use below.
     const [
-      received,
       completed,
       processed,
       errors,
@@ -987,8 +975,7 @@ const updateEntry = async (req, res) => {
           !Number.isInteger(value) ||
           value < 0 ||
           value > 4294967295
-      ) ||
-      completed > received
+      )
     ) {
       return res.status(400).json({
         success: false,

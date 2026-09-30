@@ -26,23 +26,25 @@ router.get(
   getPendingLeaveRequests
 );
 
-
-// Approves a specific pending leave request.
-router.patch(
-  "/leave-requests/:id/approve",
+const approveLeave = [
   authenticate,
   allowRoles("teamLead"),
-  approveLeaveRequest
-);
+  approveLeaveRequest,
+];
 
-
-// Rejects a specific pending leave request.
-router.patch(
-  "/leave-requests/:id/reject",
+const rejectLeave = [
   authenticate,
   allowRoles("teamLead"),
-  rejectLeaveRequest
-);
+  rejectLeaveRequest,
+];
+
+// POST is the primary method — some CWP Apache proxies drop PATCH and the
+// browser then shows "Cannot reach API".
+router.post("/leave-requests/:id/approve", ...approveLeave);
+router.patch("/leave-requests/:id/approve", ...approveLeave);
+
+router.post("/leave-requests/:id/reject", ...rejectLeave);
+router.patch("/leave-requests/:id/reject", ...rejectLeave);
 
 
 // Exports the router so index.js can register these APIs.

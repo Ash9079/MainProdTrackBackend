@@ -126,6 +126,15 @@ router.put(
   ),
   updateGuideSection
 );
+router.post(
+  "/:versionId/sections/:sectionId",
+  authenticate,
+  allowRoles(
+    "coreTeam",
+    "administrator"
+  ),
+  updateGuideSection
+);
 
 // Exports the Guide router for use in index.js.
 module.exports = router;

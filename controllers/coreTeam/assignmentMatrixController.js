@@ -1,4 +1,11 @@
 const db = require("../../config/db");
+const {
+  INDEXER_ROLE_SQL,
+  TEAM_LEAD_ROLE_SQL,
+  CORE_TEAM_ROLE_SQL,
+  ADMIN_ROLE_SQL,
+  normalizeRoleCode,
+} = require("../../utils/roleSql");
 
 
 // ============================================================
@@ -45,11 +52,11 @@ const getAssignmentMatrix = async (req, res) => {
       WHERE u.status = 'active'
 
       ORDER BY
-        CASE r.code
-          WHEN 'indexer' THEN 1
-          WHEN 'lead' THEN 2
-          WHEN 'core' THEN 3
-          WHEN 'admin' THEN 4
+        CASE
+          WHEN ${INDEXER_ROLE_SQL} THEN 1
+          WHEN ${TEAM_LEAD_ROLE_SQL} THEN 2
+          WHEN ${CORE_TEAM_ROLE_SQL} THEN 3
+          WHEN ${ADMIN_ROLE_SQL} THEN 4
           ELSE 5
         END,
         u.full_name ASC
@@ -106,7 +113,7 @@ const getAssignmentMatrix = async (req, res) => {
       INNER JOIN project_assignment pa
         ON pa.user_id = indexer.user_id
 
-      WHERE r.code = 'indexer'
+      WHERE ${INDEXER_ROLE_SQL}
         AND indexer.status = 'active'
         AND indexer.team_lead_id IS NOT NULL
     `);
@@ -138,10 +145,11 @@ const getAssignmentMatrix = async (req, res) => {
       let projectIds = [];
       let editable = false;
       let accessType = "direct";
+      const role = normalizeRoleCode(user.role);
 
 
       // Indexers use direct assignments.
-      if (user.role === "indexer") {
+      if (role === "indexer") {
         projectIds = [
           ...(directMap[user.id] || []),
         ];
@@ -152,7 +160,7 @@ const getAssignmentMatrix = async (req, res) => {
 
 
       // Team Leads inherit projects from their Indexers.
-      else if (user.role === "lead") {
+      else if (role === "lead") {
         const direct = directMap[user.id]
           ? [...directMap[user.id]]
           : [];
@@ -175,7 +183,7 @@ const getAssignmentMatrix = async (req, res) => {
 
 
       // Core Team always has access to everything.
-      else if (user.role === "core") {
+      else if (role === "core") {
         projectIds = [...allProjectIds];
 
         editable = false;
@@ -184,7 +192,7 @@ const getAssignmentMatrix = async (req, res) => {
 
 
       // Administrator always has access to everything.
-      else if (user.role === "admin") {
+      else if (role === "admin") {
         projectIds = [...allProjectIds];
 
         editable = false;
@@ -200,7 +208,7 @@ const getAssignmentMatrix = async (req, res) => {
         employee_id: user.employee_id,
         name: user.name,
 
-        role: user.role,
+        role,
 
         team_lead_id:
           user.team_lead_id,
@@ -246,27 +254,10 @@ const saveAssignmentMatrix = async (
   res
 ) => {
   let connection;
+  let transactionStarted = false;
 
   try {
-    /*
-      Frontend should send:
-
-      {
-        "assignments": [
-          {
-            "userId": 4,
-            "projectIds": [1, 2, 3]
-          },
-          {
-            "userId": 5,
-            "projectIds": [2]
-          }
-        ]
-      }
-    */
-
-    const { assignments } = req.body;
-
+    const { assignments } = req.body || {};
 
     if (!Array.isArray(assignments)) {
       return res.status(400).json({
@@ -276,14 +267,9 @@ const saveAssignmentMatrix = async (
       });
     }
 
-
-    // --------------------------------------------------------
-    // Prevent duplicate users inside one request.
-    // --------------------------------------------------------
     const userIds = assignments.map(
       (item) => Number(item.userId)
     );
-
 
     if (
       new Set(userIds).size !==
@@ -296,10 +282,6 @@ const saveAssignmentMatrix = async (
       });
     }
 
-
-    // --------------------------------------------------------
-    // Load valid project IDs.
-    // --------------------------------------------------------
     const [projectRows] = await db.query(`
       SELECT project_id
       FROM project
@@ -312,10 +294,6 @@ const saveAssignmentMatrix = async (
       )
     );
 
-
-    // --------------------------------------------------------
-    // Validate every assignment before modifying DB.
-    // --------------------------------------------------------
     for (const assignment of assignments) {
       const userId = Number(
         assignment.userId
@@ -323,7 +301,6 @@ const saveAssignmentMatrix = async (
 
       const projectIds =
         assignment.projectIds;
-
 
       if (
         !Number.isInteger(userId) ||
@@ -336,11 +313,6 @@ const saveAssignmentMatrix = async (
         });
       }
 
-
-      // ------------------------------------------------------
-      // Only active Indexers can be directly modified from
-      // Assignment Matrix.
-      // ------------------------------------------------------
       const [userRows] = await db.query(
         `
         SELECT
@@ -360,7 +332,6 @@ const saveAssignmentMatrix = async (
         [userId]
       );
 
-
       if (userRows.length === 0) {
         return res.status(400).json({
           success: false,
@@ -369,10 +340,7 @@ const saveAssignmentMatrix = async (
         });
       }
 
-
-      if (
-        userRows[0].role !== "indexer"
-      ) {
+      if (normalizeRoleCode(userRows[0].role) !== "indexer") {
         return res.status(403).json({
           success: false,
           message:
@@ -380,25 +348,16 @@ const saveAssignmentMatrix = async (
         });
       }
 
-
-      // ------------------------------------------------------
-      // Check project IDs.
-      // ------------------------------------------------------
       const uniqueProjectIds = [
         ...new Set(
-          projectIds.map(Number)
+          projectIds
+            .map(Number)
+            .filter((projectId) => Number.isInteger(projectId) && projectId > 0)
         ),
       ];
 
-
-      for (
-        const projectId
-        of uniqueProjectIds
-      ) {
-        if (
-          !Number.isInteger(projectId) ||
-          !validProjectIds.has(projectId)
-        ) {
+      for (const projectId of uniqueProjectIds) {
+        if (!validProjectIds.has(projectId)) {
           return res.status(400).json({
             success: false,
             message:
@@ -408,33 +367,24 @@ const saveAssignmentMatrix = async (
       }
     }
 
-
-    // --------------------------------------------------------
-    // Start transaction.
-    // --------------------------------------------------------
     connection =
       await db.getConnection();
 
     await connection.beginTransaction();
+    transactionStarted = true;
 
-
-    // --------------------------------------------------------
-    // Replace assignments for each submitted Indexer.
-    // --------------------------------------------------------
     for (const assignment of assignments) {
       const userId =
         Number(assignment.userId);
 
       const projectIds = [
         ...new Set(
-          assignment.projectIds.map(
-            Number
-          )
+          assignment.projectIds
+            .map(Number)
+            .filter((projectId) => Number.isInteger(projectId) && projectId > 0)
         ),
       ];
 
-
-      // Remove old assignments.
       await connection.query(
         `
         DELETE FROM project_assignment
@@ -443,8 +393,6 @@ const saveAssignmentMatrix = async (
         [userId]
       );
 
-
-      // Add current selected assignments.
       for (const projectId of projectIds) {
         await connection.query(
           `
@@ -466,9 +414,8 @@ const saveAssignmentMatrix = async (
       }
     }
 
-
     await connection.commit();
-
+    transactionStarted = false;
 
     return res.status(200).json({
       success: true,
@@ -477,8 +424,15 @@ const saveAssignmentMatrix = async (
     });
 
   } catch (error) {
-    if (connection) {
-      await connection.rollback();
+    if (connection && transactionStarted) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(
+          "Save assignment matrix rollback error:",
+          rollbackError
+        );
+      }
     }
 
     console.error(

@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { SEES_ALL_PROJECTS_SQL } = require("../utils/roleSql");
 
 const getMyProjects = async (req, res) => {
   try {
@@ -21,40 +22,71 @@ const getMyProjects = async (req, res) => {
         COALESCE(SUM(de.docs_received), 0) AS total_received,
         COALESCE(SUM(de.docs_completed), 0) AS total_completed,
 
-        COALESCE(
-          SUM(de.docs_received - de.docs_completed),
-          0
-        ) AS total_pending,
-
-        CASE
-          WHEN COALESCE(SUM(de.docs_received), 0) > 0
-          THEN ROUND(
-            (
-              SUM(de.docs_received - de.docs_completed)
-              / SUM(de.docs_received)
-            ) * 100,
+        -- Prevents unsigned subtraction errors when completed is greater than received.
+          COALESCE(
+            SUM(
+              GREATEST(
+                CAST(de.docs_received AS SIGNED) - CAST(de.docs_completed AS SIGNED),
+                0
+              )
+            ),
             0
-          )
-          ELSE 0
-        END AS backlog_percentage
+          ) AS total_pending,
 
-      FROM v_user_visible_project vup
+       -- Calculates backlog safely without unsigned subtraction errors.
+CASE
+  WHEN COALESCE(SUM(de.docs_received), 0) > 0
+  THEN ROUND(
+    (
+      SUM(
+        GREATEST(
+          CAST(de.docs_received AS SIGNED) - CAST(de.docs_completed AS SIGNED),
+          0
+        )
+      )
+      / SUM(de.docs_received)
+    ) * 100,
+    0
+  )
+  ELSE 0
+END AS backlog_percentage
 
-      JOIN project p
-        ON p.project_id = vup.project_id
+      FROM project p
 
       LEFT JOIN reporting_category rc
         ON rc.category_id = p.category_id
 
       LEFT JOIN project_assignment pa
-        ON pa.user_id = vup.user_id
-       AND pa.project_id = vup.project_id
+        ON pa.user_id = ?
+       AND pa.project_id = p.project_id
 
       LEFT JOIN daily_entry de
         ON de.project_id = p.project_id
-       AND de.user_id = vup.user_id
+       AND de.user_id = ?
 
-      WHERE vup.user_id = ?
+      WHERE
+        EXISTS (
+          SELECT 1
+          FROM users u
+          INNER JOIN role r
+            ON r.role_id = u.role_id
+          WHERE u.user_id = ?
+            AND ${SEES_ALL_PROJECTS_SQL}
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM project_assignment assigned
+          WHERE assigned.user_id = ?
+            AND assigned.project_id = p.project_id
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM users teammate
+          INNER JOIN project_assignment assigned
+            ON assigned.user_id = teammate.user_id
+          WHERE teammate.team_lead_id = ?
+            AND assigned.project_id = p.project_id
+        )
 
       GROUP BY
         p.project_id,
@@ -69,7 +101,7 @@ const getMyProjects = async (req, res) => {
 
       ORDER BY p.project_name ASC
       `,
-      [userId]
+      [userId, userId, userId, userId, userId]
     );
 
     return res.status(200).json({

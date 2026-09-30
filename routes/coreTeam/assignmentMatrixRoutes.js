@@ -45,5 +45,15 @@ router.put(
   saveAssignmentMatrix
 );
 
+router.post(
+  "/assignment-matrix",
+  authenticate,
+  allowRoles(
+    "coreTeam",
+    "administrator"
+  ),
+  saveAssignmentMatrix
+);
+
 
 module.exports = router;

@@ -49,8 +49,20 @@ router.patch(
   allowRoles("indexer", "teamLead"),
   updateEntry
 );
+router.post(
+  "/:id",
+  authenticate,
+  allowRoles("indexer", "teamLead"),
+  updateEntry
+);
 
 router.patch(
+  "/:id/review",
+  authenticate,
+  allowRoles("teamLead"),
+  reviewEntry
+);
+router.post(
   "/:id/review",
   authenticate,
   allowRoles("teamLead"),
